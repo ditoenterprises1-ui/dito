@@ -21,6 +21,10 @@
   video, canvas.prev { width:100%; border-radius:14px; background:#000; display:block; }
   .msg { padding:12px; border-radius:12px; margin-top:10px; font-size:14px; } .msg.err { background:rgba(180,35,24,.12); color:var(--bad); } .msg.good { background:rgba(21,115,71,.12); color:var(--ok); }
   .hide { display:none; } small { color:var(--mute); }
+  .ring { display:grid; place-items:center; margin:6px 0 2px; }
+  .ring svg { transform:rotate(-90deg); } .ring .bgc { stroke:var(--line); } .ring .fg { stroke:var(--brand); stroke-linecap:round; transition:stroke-dashoffset .25s linear; }
+  .ring.done .fg { stroke:var(--ok); } .ring.bad .fg { stroke:var(--bad); }
+  .ringtxt { position:absolute; font-size:22px; font-weight:700; } .ringwrap { position:relative; display:grid; place-items:center; }
 </style>
 </head>
 <body>
@@ -48,6 +52,18 @@
     <input id="file" type="file" accept="image/*" capture="user" class="hide">
   </div>
 
+  <div class="card hide" id="progCard">
+    <div class="ring ringwrap" id="ring">
+      <svg width="132" height="132" viewBox="0 0 132 132">
+        <circle class="bgc" cx="66" cy="66" r="58" fill="none" stroke-width="10"></circle>
+        <circle class="fg" id="arc" cx="66" cy="66" r="58" fill="none" stroke-width="10" stroke-dasharray="364.4" stroke-dashoffset="364.4"></circle>
+      </svg>
+      <div class="ringtxt" id="pct">0%</div>
+    </div>
+    <div class="center sub" id="plabel" style="margin:6px 0 0">Starting…</div>
+    <button id="retryPhoto" class="alt hide">Send the photo again</button>
+  </div>
+
   <button id="go" class="hide">Sign in</button>
   <button id="send" class="hide">Send</button>
   <div id="msg"></div>
@@ -67,6 +83,7 @@
     var name = 'cb' + Math.random().toString(36).slice(2), s = document.createElement('script'), done = false;
     window[name] = function (d) { done = true; cb(d); s.remove(); delete window[name]; };
     s.onerror = function () { if (!done) cb({ ok: false, error: 'Could not reach the server. Check your internet.' }); };
+    params.s = S;   // so the bot always knows the address that really works
     var qs = Object.keys(params).map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
     s.src = S + (S.indexOf('?') < 0 ? '?' : '&') + qs + '&callback=' + name + '&_=' + Date.now();
     document.body.appendChild(s);
@@ -94,14 +111,24 @@
     msg(''); show('go', false); show('steps', true); dot(1); dot(2); dot(3);
     $('t1').textContent = 'Getting your location…';
     if (!navigator.geolocation) { dot(1, 'bad'); $('t1').textContent = 'This phone cannot share location'; fail('Open this link in Chrome or Safari.'); return; }
-    navigator.geolocation.getCurrentPosition(function (p) {
+    // a quick rough fix first so nobody waits on site; the accurate one keeps coming in the background
+    var got = false, watch = null;
+    var take = function (p, exact) {
       st.lat = p.coords.latitude; st.lng = p.coords.longitude; st.acc = p.coords.accuracy;
-      dot(1, 'ok'); $('t1').textContent = 'Location found (±' + Math.round(st.acc) + ' m)';
-      startCamera();
-    }, function (e) {
+      $('t1').textContent = 'Location found (\u00B1' + Math.round(st.acc) + ' m)' + (exact ? '' : ' \u2013 improving\u2026');
+      if (got) return;
+      got = true; dot(1, 'ok'); startCamera();
+      try { watch = navigator.geolocation.watchPosition(function (p2) { if (p2.coords.accuracy <= st.acc) { st.lat = p2.coords.latitude; st.lng = p2.coords.longitude; st.acc = p2.coords.accuracy; $('t1').textContent = 'Location found (\u00B1' + Math.round(st.acc) + ' m)'; } }, function () { }, { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }); } catch (e) { }
+      st.watch = watch;
+    };
+    var failed = function (e) {
+      if (got) return;
       dot(1, 'bad'); $('t1').textContent = 'Location not allowed';
-      fail(e && e.code === 1 ? 'Please allow Location for this page (tap the lock icon near the address, then Permissions), and try again.' : 'Could not get your location. Switch on GPS, go outside the building if needed, and try again.');
-    }, { enableHighAccuracy: true, timeout: 25000, maximumAge: 0 });
+      fail(e && e.code === 1 ? 'Please allow Location for this page (tap the lock icon near the address, then Permissions), and try again.' : 'Could not get your location. Switch on GPS, go outside the building if you can, and try again.');
+    };
+    navigator.geolocation.getCurrentPosition(function (p) { take(p, false); }, function () {
+      navigator.geolocation.getCurrentPosition(function (p) { take(p, true); }, failed, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 });
+    }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 120000 });
   };
   function fail(t) { msg(t, 'err'); show('go', true); $('go').textContent = 'Try again'; }
 
@@ -110,7 +137,7 @@
     $('t2').textContent = 'Take a selfie'; show('camCard', true);
     var useFile = function () { show('video', false); $('snap').textContent = 'Open camera'; st.mode = 'file'; };
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { useFile(); return; }
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 1280 } }, audio: false }).then(function (s) {
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 854 } }, audio: false }).then(function (s) {
       st.stream = s; $('video').srcObject = s; st.mode = 'live';
     }).catch(function () { useFile(); });
   }
@@ -124,7 +151,7 @@
     var img = new Image(); img.onload = function () { draw(img, img.naturalWidth, img.naturalHeight); }; img.src = URL.createObjectURL(f);
   };
   function draw(src, w, h) {
-    var max = 720, k = Math.min(1, max / Math.max(w, h)), cw = Math.round(w * k), ch = Math.round(h * k);
+    var max = 540, k = Math.min(1, max / Math.max(w, h)), cw = Math.round(w * k), ch = Math.round(h * k);   // small on purpose: it has to go up on site data
     var c = $('prev'); c.width = cw; c.height = ch; var x = c.getContext('2d');
     x.drawImage(src, 0, 0, cw, ch);
     // date, time and place printed on the photo
@@ -135,7 +162,7 @@
     x.fillStyle = 'rgba(0,0,0,.62)'; x.fillRect(0, ch - bh, cw, bh);
     x.fillStyle = '#fff'; x.font = '600 ' + fs + 'px system-ui,sans-serif'; x.fillText(line1, 10, ch - bh + fs * 1.3);
     x.font = fs + 'px system-ui,sans-serif'; x.fillText(line2, 10, ch - bh + fs * 2.5); x.fillText(line3, 10, ch - bh + fs * 3.65);
-    st.photo = c.toDataURL('image/jpeg', 0.62); st.clientTime = now.toISOString();
+    st.photo = c.toDataURL('image/jpeg', 0.5); st.clientTime = now.toISOString();
     if (st.stream) { st.stream.getTracks().forEach(function (t) { t.stop(); }); st.stream = null; }
     show('video', false); show('prev', true); show('snap', false); show('retake', true);
     dot(2, 'ok'); $('t2').textContent = 'Selfie taken'; show('send', true); $('send').textContent = 'Send ' + (st.kind === 'in' ? 'sign in' : 'sign out');
@@ -145,24 +172,91 @@
     if (st.mode === 'live') { show('video', true); startCamera(); } else { $('file').click(); }
   };
 
-  /* ---- step 3: send ---- */
+  /* ---- step 3: send ----
+     Two requests on purpose. The first one is tiny and marks the attendance, so it is done in a second even on
+     site data. The selfie follows as a second request with a real progress circle; if it fails, the attendance
+     is already marked and the managers are told the photo did not arrive. */
+  var ARC = 364.4;
+  function ring(pct, state, label) {
+    var p = Math.max(0, Math.min(100, Math.round(pct)));
+    $('arc').setAttribute('stroke-dashoffset', String(ARC - ARC * p / 100));
+    $('pct').textContent = p + '%';
+    $('ring').className = 'ring ringwrap' + (state ? ' ' + state : '');
+    if (label) $('plabel').textContent = label;
+  }
+  function postJSON(body, onProgress, done) {   // XHR, because it is the only way to know how much has really gone up
+    var x = new XMLHttpRequest();
+    x.open('POST', S + (S.indexOf('?') < 0 ? '?' : '&') + 'att=1', true);
+    x.setRequestHeader('Content-Type', 'text/plain;charset=utf-8');
+    if (x.upload && onProgress) x.upload.onprogress = function (e) { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    x.onload = function () { done(true); };
+    x.onerror = function () { done(false); };
+    x.ontimeout = function () { done(false); };
+    x.timeout = 120000;
+    try { x.send(body); } catch (e) { done(false); }
+  }
+  function waitFor(nonce, tries, cb) {
+    jsonp({ att: 'res', u: U, t: T, n: nonce }, function (r) {
+      if (r && r.pending) {
+        if (tries > 20) { cb(null); return; }
+        setTimeout(function () { waitFor(nonce, tries + 1, cb); }, tries < 4 ? 700 : 1500);
+        return;
+      }
+      cb(r);
+    });
+  }
+  function sendPhoto(attempt) {
+    if (!st.photo) return;
+    show('progCard', true); show('retryPhoto', false);
+    ring(0, '', 'Sending the photo…');
+    var n2 = 'p' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    var body = JSON.stringify({ u: U, t: T, s: S, kind: st.kind, n: n2, photoOnly: 1, photo: st.photo });
+    postJSON(body, function (f) { ring(5 + f * 85, '', 'Sending the photo…'); }, function (sent) {
+      if (!sent) {
+        if (attempt < 2) { ring(0, 'bad', 'Signal dropped – trying again…'); setTimeout(function () { sendPhoto(attempt + 1); }, 1500); return; }
+        ring(100, 'bad', 'Photo did not go. Your attendance is saved.');
+        show('retryPhoto', true);
+        return;
+      }
+      ring(95, '', 'Saving the photo…');
+      waitFor(n2, 0, function (r) {
+        if (r && r.ok) { ring(100, 'done', 'Photo saved ✓'); setTimeout(function () { show('progCard', false); }, 2500); }
+        else if (attempt < 2) { sendPhoto(attempt + 1); }
+        else { ring(100, 'bad', (r && r.error) || 'Photo did not save. Your attendance is saved.'); show('retryPhoto', true); }
+      });
+    });
+  }
+  $('retryPhoto').onclick = function () { sendPhoto(0); };
   $('send').onclick = function () {
-    $('send').disabled = true; $('retake').disabled = true; $('t3').textContent = 'Sending…'; msg('');
+    $('send').disabled = true; $('retake').disabled = true; $('t3').textContent = 'Marking attendance…'; msg('');
+    show('progCard', true); ring(10, '', 'Marking attendance…');
     st.nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    var body = JSON.stringify({ u: U, t: T, kind: st.kind, lat: st.lat, lng: st.lng, acc: st.acc, photo: st.photo, clientTime: st.clientTime, n: st.nonce });
-    fetch(S + (S.indexOf('?') < 0 ? '?' : '&') + 'att=1', { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: body }).catch(function () { });
-    var tries = 0;
-    (function poll() {
-      tries++;
-      jsonp({ att: 'res', u: U, t: T, n: st.nonce }, function (r) {
-        if (r && r.pending) { if (tries > 14) { dot(3, 'bad'); $('t3').textContent = 'No answer yet'; msg('Not sure it was saved. Open the link again to check — if it says signed in, you are done.', 'err'); $('send').disabled = false; return; } setTimeout(poll, 1800); return; }
+    var body = JSON.stringify({ u: U, t: T, s: S, kind: st.kind, lat: st.lat, lng: st.lng, acc: st.acc, clientTime: st.clientTime, n: st.nonce, wantPhoto: st.photo ? 1 : 0 });
+    postJSON(body, null, function (sent) {
+      if (!sent) { ring(0, 'bad', 'Could not reach the server'); dot(3, 'bad'); $('t3').textContent = 'Not saved'; msg('Could not reach the server. Check your signal and tap Send again.', 'err'); $('send').disabled = false; $('retake').disabled = false; return; }
+      ring(60, '', 'Saving…');
+      waitFor(st.nonce, 0, function (r) {
         if (r && r.ok) {
+          ring(100, 'done', 'Attendance saved ✓');
           dot(3, 'ok'); $('t3').textContent = r.dup ? 'Already recorded' : 'Saved';
           show('send', false); show('camCard', false);
+          try { if (st.watch) navigator.geolocation.clearWatch(st.watch); } catch (e) { }
           msg('<b>' + (r.kind === 'In' ? 'Signed in' : 'Signed out') + ' at ' + r.time + '</b><br>' + r.status + ' · ' + r.place + (r.flags && r.flags.length ? '<br><small>Note: ' + r.flags.join('; ') + '</small>' : ''), 'good');
-        } else { dot(3, 'bad'); $('t3').textContent = 'Not saved'; msg((r && r.error) || 'Could not save. Please try again.', 'err'); $('send').disabled = false; $('retake').disabled = false; }
+          if (r.dup) { show('progCard', false); return; }
+          setTimeout(function () { sendPhoto(0); }, 300);
+        } else if (r === null) {
+          ring(100, 'bad', 'No answer yet');
+          dot(3, 'bad'); $('t3').textContent = 'No answer yet';
+          msg('Not sure it was saved. Open the link again to check — if it says signed in, you are done.', 'err');
+          $('send').disabled = false; $('retake').disabled = false;
+        } else {
+          ring(100, 'bad', 'Not saved');
+          dot(3, 'bad'); $('t3').textContent = 'Not saved';
+          msg((r && r.error) || 'Could not save. Please try again.', 'err');
+          $('send').disabled = false; $('retake').disabled = false;
+        }
       });
-    })();
+    });
   };
 })();
 </script>
