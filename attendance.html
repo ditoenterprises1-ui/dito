@@ -237,11 +237,13 @@
       ring(60, '', 'Saving…');
       waitFor(st.nonce, 0, function (r) {
         if (r && r.ok) {
-          ring(100, 'done', 'Attendance saved ✓');
-          dot(3, 'ok'); $('t3').textContent = r.dup ? 'Already recorded' : 'Saved';
+          ring(100, r.waiting ? '' : 'done', r.waiting ? 'Sent to your manager' : 'Attendance saved ✓');
+          dot(3, 'ok'); $('t3').textContent = r.dup ? 'Already recorded' : (r.waiting ? 'Waiting for your manager' : 'Saved');
           show('send', false); show('camCard', false);
           try { if (st.watch) navigator.geolocation.clearWatch(st.watch); } catch (e) { }
-          msg('<b>' + (r.kind === 'In' ? 'Signed in' : 'Signed out') + ' at ' + r.time + '</b><br>' + r.status + ' · ' + r.place + (r.flags && r.flags.length ? '<br><small>Note: ' + r.flags.join('; ') + '</small>' : ''), 'good');
+          msg('<b>' + (r.kind === 'In' ? 'Signed in' : 'Signed out') + ' at ' + r.time + '</b><br>' + r.status + ' · ' + r.place +
+            (r.waiting ? '<br><small>You are away from the office, so a manager has to confirm it. You will get a message in Slack.</small>' : '') +
+            (r.flags && r.flags.length ? '<br><small>Note: ' + r.flags.join('; ') + '</small>' : ''), r.waiting ? '' : 'good');
           if (r.dup) { show('progCard', false); return; }
           setTimeout(function () { sendPhoto(0); }, 300);
         } else if (r === null) {
