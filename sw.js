@@ -35,6 +35,11 @@ function sendAll() {
     return items.sort(function (a, b) { return (a.at || 0) - (b.at || 0); }).reduce(function (chain, it) {
       return chain.then(function () {
         if (!it.url) return;
+        // a visit photo is a POST with the picture in the body; everything else is a tiny GET
+        if (it.body) {
+          return fetch(it.url, { method: 'POST', mode: 'no-cors', cache: 'no-store', credentials: 'omit',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: it.body }).catch(function () { });
+        }
         return fetch(it.url + '&bg=1&_=' + Date.now(), { mode: 'no-cors', cache: 'no-store', credentials: 'omit' })
           .catch(function () { });
       });
