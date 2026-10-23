@@ -68,6 +68,7 @@
     <button id="snap" style="margin-top:12px">Take selfie</button>
     <button id="retake" class="alt hide">Retake</button>
     <input id="file" type="file" accept="image/*" capture="user" class="hide">
+    <input id="file2" type="file" accept="image/*" capture="environment" class="hide">
   </div>
 
   <div class="card hide" id="progCard">
@@ -85,14 +86,17 @@
   <button id="go" class="hide">Sign in</button>
   <button id="send" class="hide">Send</button>
   <div id="msg"></div>
-  <p class="sub center" style="margin-top:18px"><small>Your location and selfie are taken only when you tap the button, to mark attendance. Nothing is tracked in between.</small></p>
+  <p class="sub center" style="margin-top:18px"><small id="foot">Your location and selfie are taken only when you tap the button, to mark attendance. Nothing is tracked in between.</small></p>
 </main>
 
 <script>
 (function () {
   var q = new URLSearchParams(location.search), U = q.get('u') || '', T = q.get('t') || '', S = q.get('s') || '';
+  // k=visit&c=<check id>: the same page, used at a customer's gate for one photo of the name board.
+  var VISIT = (q.get('k') || '') === 'visit', CHECK = (q.get('c') || '').replace(/[^A-Za-z0-9]/g, '');
   var $ = function (id) { return document.getElementById(id); };
   var st = { kind: 'in', name: '', lat: null, lng: null, acc: null, photo: null, stream: null, nonce: Math.random().toString(36).slice(2) + Date.now().toString(36) };
+  if (VISIT) st.kind = 'visit';
 
   function msg(text, cls) { $('msg').innerHTML = text ? '<div class="msg ' + (cls || '') + '">' + text + '</div>' : ''; }
   function dot(n, s) { var d = $('d' + n); d.className = 'dot ' + (s || ''); d.textContent = s === 'ok' ? '✓' : (s === 'bad' ? '!' : ''); }
@@ -150,8 +154,9 @@
   function boxGet() { try { return JSON.parse(localStorage.getItem(BOX) || '[]'); } catch (e) { return []; } }
   function boxSet(a) {
     try { localStorage.setItem(BOX, JSON.stringify(a)); }
-    catch (e) {   // the phone's storage is full: the attendance matters, the picture does not
-      try { a.forEach(function (x) { x.photo = null; }); localStorage.setItem(BOX, JSON.stringify(a)); } catch (e2) { }
+    catch (e) {   // the phone's storage is full: the attendance matters, the selfie does not
+      try { a.forEach(function (x) { if (x.mode !== 'visit') x.photo = null; }); localStorage.setItem(BOX, JSON.stringify(a)); }
+      catch (e2) { try { a.forEach(function (x) { x.photo = null; }); localStorage.setItem(BOX, JSON.stringify(a)); } catch (e3) { } }
     }
     mirror(a); paintBox();
   }
@@ -170,19 +175,28 @@
       try {
         var os = d.transaction('outbox', 'readwrite').objectStore('outbox');
         os.clear();
-        // the worker only ever needs the small mark, never the picture
-        a.forEach(function (x) { var c = {}; for (var k in x) if (k !== 'photo') c[k] = x[k]; c.url = url({ att: 'mark', u: U, t: T, kind: x.kind, lat: x.lat, lng: x.lng, acc: x.acc, ct: x.ct, wp: x.wp, n: x.n }); os.put(c); });
+        // the worker only ever needs the small mark, never the picture - except a visit, where the picture IS the mark
+        a.forEach(function (x) {
+          var c = {}; for (var k in x) if (k !== 'photo') c[k] = x[k];
+          if (x.mode === 'visit') { c.url = S + (S.indexOf('?') < 0 ? '?' : '&') + 'att=1'; c.body = visitBody(x); }
+          else c.url = url({ att: 'mark', u: U, t: T, kind: x.kind, lat: x.lat, lng: x.lng, acc: x.acc, ct: x.ct, wp: x.wp, n: x.n });
+          os.put(c);
+        });
       } catch (e) { }
     });
   }
+  function visitBody(x) {
+    return JSON.stringify({ u: U, t: T, s: S, visit: 1, c: x.c, n: x.n, lat: x.lat, lng: x.lng, acc: x.acc, ct: x.ct, photo: x.photo || null });
+  }
+  function what(it) { return it.mode === 'visit' ? 'visit photo' : (it.kind === 'in' ? 'sign in' : 'sign out'); }
   function paintBox() {
     var a = boxGet(), el = $('outbox');
     if (!a.length) { el.className = 'pend hide'; return; }
     var it = a[0], mins = Math.round((Date.now() - it.at) / 60000), stuck = mins >= 30;
     el.className = 'pend' + (stuck ? ' stuck' : '');
-    el.innerHTML = (stuck ? '<b>Still not sent after ' + mins + ' minutes.</b><br>Your ' + (it.kind === 'in' ? 'sign in' : 'sign out') +
+    el.innerHTML = (stuck ? '<b>Still not sent after ' + mins + ' minutes.</b><br>Your ' + what(it) +
         ' of ' + it.clock + ' is safe on your phone and keeps trying. Tell your manager if you can.'
-      : '⏳ <b>' + a.length + ' waiting to send</b> – ' + (it.kind === 'in' ? 'sign in' : 'sign out') + ' of ' + it.clock +
+      : '⏳ <b>' + a.length + ' waiting to send</b> – ' + what(it) + ' of ' + it.clock +
         '. It will go by itself, you can lock the phone.');
   }
   function bgSync() {
@@ -196,7 +210,7 @@
     var it = a[0];
     if (it.sending && !manual) return;
     it.sending = 1; boxSet(a);
-    jsonp({ att: 'mark', u: U, t: T, kind: it.kind, lat: it.lat, lng: it.lng, acc: it.acc, ct: it.ct, wp: it.wp, n: it.n }, function (r) {
+    var landed = function (r) {
       var cur = boxGet(), top = cur[0];
       if (!top || top.id !== it.id) { schedule(); return; }   // the worker got there first
       if (r && r.ok) { cur.shift(); boxSet(cur); onMarked(r, it); schedule(); return; }
@@ -205,6 +219,19 @@
       }
       top.sending = 0; top.tries = (top.tries || 0) + 1; boxSet(cur);
       schedule();
+    };
+    // A visit is one request with the picture inside it, so it goes as a POST with the progress circle.
+    if (it.mode === 'visit') { sendVisit(it, landed); return; }
+    jsonp({ att: 'mark', u: U, t: T, kind: it.kind, lat: it.lat, lng: it.lng, acc: it.acc, ct: it.ct, wp: it.wp, n: it.n }, landed);
+  }
+  function sendVisit(it, landed) {
+    show('progCard', true); show('retryPhoto', false);
+    ring(5, '', 'Sending the photo…');
+    postJSON(visitBody(it), function (f) { ring(5 + f * 85, '', 'Sending the photo…'); }, function (sent) {
+      if (!sent) { netSeen(false); landed({ ok: false, offline: true }); return; }
+      netSeen(true);
+      ring(95, '', 'Saving…');
+      waitFor(it.n, 0, function (r) { landed(r || { ok: false, offline: true }); });
     });
   }
   function schedule() {
@@ -230,13 +257,35 @@
   var WHO = 'ditoWho_' + U;
   function cacheWho(r) { try { localStorage.setItem(WHO, JSON.stringify({ d: new Date().toDateString(), r: r })); } catch (e) { } }
   function paintWho(r) {
-    st.name = r.name; st.kind = r.next === 'out' ? 'out' : 'in';
+    st.name = r.name;
+    if (VISIT) { $('who').textContent = 'Hello, ' + r.name; return; }   // a visit never changes the button
+    st.kind = r.next === 'out' ? 'out' : 'in';
     $('who').textContent = 'Hello, ' + r.name;
     if (r.next === 'done') { $('state').innerHTML = '✅ Signed in and out for today.<br><small>' + (r.rows || []).join(' · ') + '</small>'; show('go', false); return; }
     $('state').innerHTML = r.next === 'in' ? 'You have not signed in yet.' : 'Signed in: ' + (r.rows || []).join(' · ');
     $('go').textContent = r.next === 'in' ? 'Sign in' : 'Sign out'; show('go', true);
   }
-  (function () {
+  /* A visit: no sign in, no sign out, no waiting on the server before he can press anything. The button is
+     there the moment the page opens, because he is standing at a gate on one bar of signal. */
+  if (VISIT) {
+    (function () {
+      $('t2').textContent = 'Photo of the name board';
+      $('snap').textContent = 'Take the photo';
+      $('go').textContent = 'Take the photo'; show('go', true);
+      $('state').innerHTML = 'One photo of the name board or the entrance.<br><small>Your location is taken at the same moment – that is what puts the visit on record.</small>';
+      $('foot').textContent = 'The photo and your location are taken only when you tap the button. Nothing is tracked in between.';
+      var c = null;
+      try { c = JSON.parse(localStorage.getItem(WHO) || 'null'); } catch (e) { }
+      if (c && c.r && c.r.name) st.name = c.r.name;
+      if (!CHECK) { $('who').textContent = 'Link problem'; msg('This photo link is incomplete. Save the call again and use the new link.', 'err'); show('go', false); return; }
+      $('who').textContent = st.name ? 'Hello, ' + st.name : 'Visit photo';
+      jsonp({ att: 'who', u: U, t: T }, function (r) { if (r && r.ok) { cacheWho(r); paintWho(r); } });
+      var qv = boxGet(), dv = false;
+      qv.forEach(function (x) { if (x.sending) { x.sending = 0; dv = true; } });
+      if (dv) boxSet(qv);
+      paintNet(); paintBox(); schedule();
+    })();
+  } else (function () {
     var c = null;
     try { c = JSON.parse(localStorage.getItem(WHO) || 'null'); } catch (e) { }
     if (c && c.d === new Date().toDateString() && c.r && c.r.name) paintWho(c.r);
@@ -288,20 +337,21 @@
   function fail(t) { msg(t, 'err'); show('go', true); $('go').textContent = 'Try again'; }
 
   /* ---- step 2: selfie ---- */
+  function camInput() { return VISIT ? $('file2') : $('file'); }   // a visit wants the back camera, a selfie the front one
   function startCamera() {
-    $('t2').textContent = 'Take a selfie'; show('camCard', true);
+    $('t2').textContent = VISIT ? 'Photo of the name board' : 'Take a selfie'; show('camCard', true);
     var useFile = function () { show('video', false); $('snap').textContent = 'Open camera'; st.mode = 'file'; };
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { useFile(); return; }
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 854 } }, audio: false }).then(function (s) {
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: VISIT ? { ideal: 'environment' } : 'user', width: { ideal: 640 }, height: { ideal: 854 } }, audio: false }).then(function (s) {
       st.stream = s; $('video').srcObject = s; st.mode = 'live';
     }).catch(function () { useFile(); });
   }
   $('snap').onclick = function () {
-    if (st.mode === 'file') { $('file').click(); return; }
+    if (st.mode === 'file') { camInput().click(); return; }
     var v = $('video'); if (!v.videoWidth) return;
     draw(v, v.videoWidth, v.videoHeight);
   };
-  $('file').onchange = function () {
+  $('file').onchange = $('file2').onchange = function () {
     var f = this.files && this.files[0]; if (!f) return;
     var img = new Image(); img.onload = function () { draw(img, img.naturalWidth, img.naturalHeight); }; img.src = URL.createObjectURL(f);
   };
@@ -313,7 +363,7 @@
     var c = $('prev'); c.width = cw; c.height = ch; var x = c.getContext('2d');
     x.drawImage(src, 0, 0, cw, ch);
     // date, time and place printed on the photo
-    var now = new Date(), line1 = st.name + ' · ' + (st.kind === 'in' ? 'SIGN IN' : 'SIGN OUT');
+    var now = new Date(), line1 = (st.name || '') + ' · ' + (VISIT ? 'VISIT' : (st.kind === 'in' ? 'SIGN IN' : 'SIGN OUT'));
     var line2 = now.toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' });
     var line3 = (st.lat !== null ? st.lat.toFixed(5) + ', ' + st.lng.toFixed(5) + '  ±' + Math.round(st.acc) + ' m' : 'location not shared');
     var fs = Math.max(13, Math.round(cw / 26)), bh = fs * 4.1;
@@ -323,13 +373,14 @@
     st.photo = c.toDataURL('image/jpeg', slow ? 0.4 : 0.5); st.clientTime = now.toISOString();
     if (st.stream) { st.stream.getTracks().forEach(function (t) { t.stop(); }); st.stream = null; }
     show('video', false); show('prev', true); show('snap', false); show('retake', true);
-    dot(2, 'ok'); $('t2').textContent = 'Selfie taken'; show('send', true); $('send').textContent = 'Send ' + (st.kind === 'in' ? 'sign in' : 'sign out');
+    dot(2, 'ok'); $('t2').textContent = VISIT ? 'Photo taken' : 'Selfie taken'; show('send', true);
+    $('send').textContent = VISIT ? 'Send the photo' : ('Send ' + (st.kind === 'in' ? 'sign in' : 'sign out'));
   }
   // Android keeps sending the outbox even with the page closed and the phone locked.
   if ('serviceWorker' in navigator) { try { navigator.serviceWorker.register('sw.js'); } catch (e) { } }
   $('retake').onclick = function () {
     show('prev', false); show('retake', false); show('snap', true); show('send', false); dot(2); st.photo = null;
-    if (st.mode === 'live') { show('video', true); startCamera(); } else { $('file').click(); }
+    if (st.mode === 'live') { show('video', true); startCamera(); } else { camInput().click(); }
   };
 
   /* ---- step 3: send ----
@@ -388,6 +439,16 @@
   }
   $('retryPhoto').onclick = function () { sendPhoto(0); };
   function onMarked(r, it) {
+    if ((it && it.mode === 'visit') || r.kind === 'Visit') {
+      ring(100, 'done', r.dup ? 'Already sent ✓' : 'Photo sent ✓');
+      dot(3, 'ok'); $('t3').textContent = r.dup ? 'Already sent' : 'Sent';
+      show('send', false); show('camCard', false); show('go', false);
+      try { if (st.watch) navigator.geolocation.clearWatch(st.watch); } catch (e) { }
+      msg(r.dup ? '<b>This visit is already on record.</b><br>Nothing more to do.'
+        : '<b>Photo sent.</b><br>' + (r.status || 'Checking the location…') + '<br><small>You will get one line in Slack once the location is checked. You can walk on.</small>', 'good');
+      setTimeout(function () { show('progCard', false); }, 3000);
+      return;
+    }
     ring(100, r.waiting ? '' : 'done', r.waiting ? 'Sent to your manager' : 'Attendance saved ✓');
     dot(3, 'ok'); $('t3').textContent = r.dup ? 'Already recorded' : (r.waiting ? 'Waiting for your manager' : 'Saved');
     show('send', false); show('camCard', false);
@@ -420,6 +481,7 @@
       at: Date.now(), tries: 0
     };
     st.pendingId = it.id;
+    if (VISIT) { it.mode = 'visit'; it.c = CHECK; it.wp = 1; }
     var a = boxGet(); a.push(it); boxSet(a);
     show('progCard', true); ring(25, '', 'Saved on your phone – sending…');
     dot(3, 'ok'); $('t3').textContent = 'Saved on your phone';
