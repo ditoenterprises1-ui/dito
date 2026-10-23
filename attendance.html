@@ -25,12 +25,30 @@
   .ring svg { transform:rotate(-90deg); } .ring .bgc { stroke:var(--line); } .ring .fg { stroke:var(--brand); stroke-linecap:round; transition:stroke-dashoffset .25s linear; }
   .ring.done .fg { stroke:var(--ok); } .ring.bad .fg { stroke:var(--bad); }
   .ringtxt { position:absolute; font-size:22px; font-weight:700; } .ringwrap { position:relative; display:grid; place-items:center; }
+  .net { padding:12px 14px; } .net small { font-size:12px; }
+  button.tiny { width:auto; padding:8px 14px; font-size:14px; border-radius:10px; background:transparent; color:var(--brand); border:1.5px solid var(--brand); flex:none; }
+  .sig { display:flex; align-items:flex-end; gap:3px; height:22px; flex:none; }
+  .sig i { width:4px; border-radius:2px; background:var(--line); display:block; }
+  .sig i:nth-child(1){height:7px} .sig i:nth-child(2){height:11px} .sig i:nth-child(3){height:16px} .sig i:nth-child(4){height:21px}
+  .sig.ok i:nth-child(-n+4), .sig.ok i { background:var(--ok); }
+  .sig.weak i:nth-child(-n+2) { background:#d98500; } .sig.off i:nth-child(1) { background:var(--bad); }
+  .pend { margin-top:10px; padding:10px 12px; border-radius:10px; background:rgba(217,133,0,.14); color:#d98500; font-size:13px; }
+  .pend.stuck { background:rgba(180,35,24,.14); color:var(--bad); }
 </style>
 </head>
 <body>
 <main>
   <h1>DiTo Enterprises</h1>
   <p class="sub" id="who">Loading…</p>
+
+  <div class="card net" id="netCard">
+    <div class="row" style="margin:0">
+      <span class="sig" id="sig"><i></i><i></i><i></i><i></i></span>
+      <span style="flex:1"><span id="netTxt">Checking the connection…</span><br><small id="netSub"></small></span>
+      <button id="tryNow" class="tiny">Try now</button>
+    </div>
+    <div id="outbox" class="pend hide"></div>
+  </div>
 
   <div class="card" id="clockCard">
     <div class="big" id="clock">--:--</div>
@@ -79,14 +97,123 @@
   function msg(text, cls) { $('msg').innerHTML = text ? '<div class="msg ' + (cls || '') + '">' + text + '</div>' : ''; }
   function dot(n, s) { var d = $('d' + n); d.className = 'dot ' + (s || ''); d.textContent = s === 'ok' ? '✓' : (s === 'bad' ? '!' : ''); }
   function show(id, on) { $(id).classList.toggle('hide', !on); }
-  function jsonp(params, cb) {
-    var name = 'cb' + Math.random().toString(36).slice(2), s = document.createElement('script'), done = false;
-    window[name] = function (d) { done = true; cb(d); s.remove(); delete window[name]; };
-    s.onerror = function () { if (!done) cb({ ok: false, error: 'Could not reach the server. Check your internet.' }); };
+  function url(params) {
     params.s = S;   // so the bot always knows the address that really works
     var qs = Object.keys(params).map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
-    s.src = S + (S.indexOf('?') < 0 ? '?' : '&') + qs + '&callback=' + name + '&_=' + Date.now();
+    return S + (S.indexOf('?') < 0 ? '?' : '&') + qs;
+  }
+  // One small GET, answer included. A script tag is the most forgiving thing there is on a bad line, and
+  // it always finishes: either the server answers, or the timeout does.
+  function jsonp(params, cb, ms) {
+    var name = 'cb' + Math.random().toString(36).slice(2), s = document.createElement('script'), done = false;
+    var finish = function (d) {
+      if (done) return; done = true;
+      try { s.remove(); } catch (e) { } try { delete window[name]; } catch (e) { window[name] = null; }
+      cb(d);
+    };
+    window[name] = function (d) { netSeen(true); finish(d); };
+    s.onerror = function () { netSeen(false); finish({ ok: false, offline: true, error: 'Could not reach the server.' }); };
+    setTimeout(function () { if (!done) { netSeen(false); finish({ ok: false, offline: true, error: 'The server did not answer.' }); } }, ms || 15000);
+    s.src = url(params) + '&callback=' + name + '&_=' + Date.now();
     document.body.appendChild(s);
+  }
+
+  /* ---------- the signal strip ---------- */
+  var NET = { ok: null, lastOk: 0 };
+  function netSeen(ok) { NET.ok = ok === null ? null : !!ok; if (ok) NET.lastOk = Date.now(); paintNet(); }
+  function ago(ts) {
+    var s = Math.round((Date.now() - ts) / 1000);
+    if (s < 5) return 'just now';
+    if (s < 60) return s + ' seconds ago';
+    var m = Math.round(s / 60);
+    return m < 60 ? m + ' minute' + (m > 1 ? 's' : '') + ' ago' : Math.round(m / 60) + ' hour(s) ago';
+  }
+  function paintNet() {
+    var on = navigator.onLine !== false;
+    var cls = !on ? 'off' : (NET.ok === true ? 'ok' : (NET.ok === false ? 'weak' : ''));
+    $('sig').className = 'sig ' + cls;
+    $('netTxt').textContent = !on ? 'No internet on the phone' :
+      (NET.ok === true ? 'Connected' : (NET.ok === false ? 'Weak signal – still trying' : 'Checking the connection…'));
+    $('netSub').textContent = NET.lastOk ? 'Server answered ' + ago(NET.lastOk) : (NET.ok === false ? 'Not reached yet' : '');
+    paintBox();
+  }
+  setInterval(paintNet, 10000);
+  window.addEventListener('online', function () { paintNet(); flush(true); });
+  window.addEventListener('offline', paintNet);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) { paintNet(); flush(true); } });
+  $('tryNow').onclick = function () { netSeen(null); flush(true); if (!boxGet().length) jsonp({ att: 'who', u: U, t: T }, function (r) { if (r && r.ok) { cacheWho(r); paintWho(r); } }); };
+
+  /* ---------- the outbox: a tap is never lost ----------
+   * The mark is written here the moment he presses Send. From then on it is only a question of when it goes,
+   * never whether. The same copy is mirrored into IndexedDB so the service worker can send it with the page shut. */
+  var BOX = 'ditoAtt_' + U, DB = null, TIMER = null, STEPS = [0, 5, 15, 30, 60, 120, 300];
+  function boxGet() { try { return JSON.parse(localStorage.getItem(BOX) || '[]'); } catch (e) { return []; } }
+  function boxSet(a) {
+    try { localStorage.setItem(BOX, JSON.stringify(a)); }
+    catch (e) {   // the phone's storage is full: the attendance matters, the picture does not
+      try { a.forEach(function (x) { x.photo = null; }); localStorage.setItem(BOX, JSON.stringify(a)); } catch (e2) { }
+    }
+    mirror(a); paintBox();
+  }
+  function idb(cb) {
+    if (DB) return cb(DB);
+    try {
+      var rq = indexedDB.open('dito-att', 1);
+      rq.onupgradeneeded = function () { try { rq.result.createObjectStore('outbox', { keyPath: 'id' }); } catch (e) { } };
+      rq.onsuccess = function () { DB = rq.result; cb(DB); };
+      rq.onerror = function () { cb(null); };
+    } catch (e) { cb(null); }
+  }
+  function mirror(a) {
+    idb(function (d) {
+      if (!d) return;
+      try {
+        var os = d.transaction('outbox', 'readwrite').objectStore('outbox');
+        os.clear();
+        // the worker only ever needs the small mark, never the picture
+        a.forEach(function (x) { var c = {}; for (var k in x) if (k !== 'photo') c[k] = x[k]; c.url = url({ att: 'mark', u: U, t: T, kind: x.kind, lat: x.lat, lng: x.lng, acc: x.acc, ct: x.ct, wp: x.wp, n: x.n }); os.put(c); });
+      } catch (e) { }
+    });
+  }
+  function paintBox() {
+    var a = boxGet(), el = $('outbox');
+    if (!a.length) { el.className = 'pend hide'; return; }
+    var it = a[0], mins = Math.round((Date.now() - it.at) / 60000), stuck = mins >= 30;
+    el.className = 'pend' + (stuck ? ' stuck' : '');
+    el.innerHTML = (stuck ? '<b>Still not sent after ' + mins + ' minutes.</b><br>Your ' + (it.kind === 'in' ? 'sign in' : 'sign out') +
+        ' of ' + it.clock + ' is safe on your phone and keeps trying. Tell your manager if you can.'
+      : '⏳ <b>' + a.length + ' waiting to send</b> – ' + (it.kind === 'in' ? 'sign in' : 'sign out') + ' of ' + it.clock +
+        '. It will go by itself, you can lock the phone.');
+  }
+  function bgSync() {
+    if (!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.ready.then(function (reg) { if (reg.sync) return reg.sync.register('dito-att'); }).catch(function () { });
+  }
+  function flush(manual) {
+    var a = boxGet();
+    paintBox();
+    if (!a.length) return;
+    var it = a[0];
+    if (it.sending && !manual) return;
+    it.sending = 1; boxSet(a);
+    jsonp({ att: 'mark', u: U, t: T, kind: it.kind, lat: it.lat, lng: it.lng, acc: it.acc, ct: it.ct, wp: it.wp, n: it.n }, function (r) {
+      var cur = boxGet(), top = cur[0];
+      if (!top || top.id !== it.id) { schedule(); return; }   // the worker got there first
+      if (r && r.ok) { cur.shift(); boxSet(cur); onMarked(r, it); schedule(); return; }
+      if (r && r.ok === false && !r.offline && !r.retry) {   // the server refused it: trying again will not help
+        cur.shift(); boxSet(cur); onRefused(r); schedule(); return;
+      }
+      top.sending = 0; top.tries = (top.tries || 0) + 1; boxSet(cur);
+      schedule();
+    });
+  }
+  function schedule() {
+    clearTimeout(TIMER);
+    var a = boxGet();
+    if (!a.length) return;
+    var n = Math.min(a[0].tries || 0, STEPS.length - 1);
+    TIMER = setTimeout(function () { flush(); }, Math.max(2, STEPS[n]) * 1000);
+    bgSync();
   }
   function tick() {
     var d = new Date();
@@ -97,14 +224,42 @@
 
   if (!U || !T || !S) { $('who').textContent = 'This link is incomplete.'; msg('Please ask the bot for "my attendance link" in Slack and open that link.', 'err'); return; }
 
-  jsonp({ att: 'who', u: U, t: T }, function (r) {
-    if (!r.ok) { $('who').textContent = 'Link problem'; msg(r.error || 'This link is not valid.', 'err'); return; }
+  /* Who he is and what he should press. Remembered from the last good load, so a dead signal never leaves
+     him looking at a page with no button on it. The server refuses a second mark anyway, so offering the
+     button when we are not sure costs nothing. */
+  var WHO = 'ditoWho_' + U;
+  function cacheWho(r) { try { localStorage.setItem(WHO, JSON.stringify({ d: new Date().toDateString(), r: r })); } catch (e) { } }
+  function paintWho(r) {
     st.name = r.name; st.kind = r.next === 'out' ? 'out' : 'in';
     $('who').textContent = 'Hello, ' + r.name;
-    if (r.next === 'done') { $('state').innerHTML = '✅ Signed in and out for today.<br><small>' + (r.rows || []).join(' · ') + '</small>'; return; }
+    if (r.next === 'done') { $('state').innerHTML = '✅ Signed in and out for today.<br><small>' + (r.rows || []).join(' · ') + '</small>'; show('go', false); return; }
     $('state').innerHTML = r.next === 'in' ? 'You have not signed in yet.' : 'Signed in: ' + (r.rows || []).join(' · ');
     $('go').textContent = r.next === 'in' ? 'Sign in' : 'Sign out'; show('go', true);
-  });
+  }
+  (function () {
+    var c = null;
+    try { c = JSON.parse(localStorage.getItem(WHO) || 'null'); } catch (e) { }
+    if (c && c.d === new Date().toDateString() && c.r && c.r.name) paintWho(c.r);
+    jsonp({ att: 'who', u: U, t: T }, function (r) {
+      if (r && r.ok) { cacheWho(r); paintWho(r); return; }
+      if (r && r.offline) {   // the signal, not the link
+        if (!st.name) {
+          $('who').textContent = c && c.r && c.r.name ? 'Hello, ' + c.r.name : 'Working offline';
+          $('state').innerHTML = 'I could not check with the server, so this is from memory.';
+          $('go').textContent = 'Sign in'; show('go', true);
+        }
+        msg('No answer from the server yet – you can still mark attendance. It will be saved on your phone and sent by itself.', '');
+        return;
+      }
+      $('who').textContent = 'Link problem';
+      msg((r && r.error) || 'This link is not valid. Ask the bot for "my attendance link" in Slack.', 'err');
+    });
+    // a send that was cut off mid-way (page closed, phone slept) must not leave the queue marked busy for ever
+    var q = boxGet(), dirty = false;
+    q.forEach(function (x) { if (x.sending) { x.sending = 0; dirty = true; } });
+    if (dirty) boxSet(q);
+    paintNet(); paintBox(); schedule();
+  })();
 
   /* ---- step 1: location ---- */
   $('go').onclick = function () {
@@ -151,7 +306,10 @@
     var img = new Image(); img.onload = function () { draw(img, img.naturalWidth, img.naturalHeight); }; img.src = URL.createObjectURL(f);
   };
   function draw(src, w, h) {
-    var max = 540, k = Math.min(1, max / Math.max(w, h)), cw = Math.round(w * k), ch = Math.round(h * k);   // small on purpose: it has to go up on site data
+    // small on purpose: it has to go up on site data, and smaller still when the phone says the line is bad
+    var slow = false;
+    try { var c4 = navigator.connection || {}; slow = /^(slow-)?2g$|^3g$/.test(String(c4.effectiveType || '')) || c4.saveData === true; } catch (e) { }
+    var max = slow ? 380 : 540, k = Math.min(1, max / Math.max(w, h)), cw = Math.round(w * k), ch = Math.round(h * k);
     var c = $('prev'); c.width = cw; c.height = ch; var x = c.getContext('2d');
     x.drawImage(src, 0, 0, cw, ch);
     // date, time and place printed on the photo
@@ -162,11 +320,13 @@
     x.fillStyle = 'rgba(0,0,0,.62)'; x.fillRect(0, ch - bh, cw, bh);
     x.fillStyle = '#fff'; x.font = '600 ' + fs + 'px system-ui,sans-serif'; x.fillText(line1, 10, ch - bh + fs * 1.3);
     x.font = fs + 'px system-ui,sans-serif'; x.fillText(line2, 10, ch - bh + fs * 2.5); x.fillText(line3, 10, ch - bh + fs * 3.65);
-    st.photo = c.toDataURL('image/jpeg', 0.5); st.clientTime = now.toISOString();
+    st.photo = c.toDataURL('image/jpeg', slow ? 0.4 : 0.5); st.clientTime = now.toISOString();
     if (st.stream) { st.stream.getTracks().forEach(function (t) { t.stop(); }); st.stream = null; }
     show('video', false); show('prev', true); show('snap', false); show('retake', true);
     dot(2, 'ok'); $('t2').textContent = 'Selfie taken'; show('send', true); $('send').textContent = 'Send ' + (st.kind === 'in' ? 'sign in' : 'sign out');
   }
+  // Android keeps sending the outbox even with the page closed and the phone locked.
+  if ('serviceWorker' in navigator) { try { navigator.serviceWorker.register('sw.js'); } catch (e) { } }
   $('retake').onclick = function () {
     show('prev', false); show('retake', false); show('snap', true); show('send', false); dot(2); st.photo = null;
     if (st.mode === 'live') { show('video', true); startCamera(); } else { $('file').click(); }
@@ -227,38 +387,44 @@
     });
   }
   $('retryPhoto').onclick = function () { sendPhoto(0); };
+  function onMarked(r, it) {
+    ring(100, r.waiting ? '' : 'done', r.waiting ? 'Sent to your manager' : 'Attendance saved ✓');
+    dot(3, 'ok'); $('t3').textContent = r.dup ? 'Already recorded' : (r.waiting ? 'Waiting for your manager' : 'Saved');
+    show('send', false); show('camCard', false);
+    try { if (st.watch) navigator.geolocation.clearWatch(st.watch); } catch (e) { }
+    msg('<b>' + (r.kind === 'In' ? 'Signed in' : 'Signed out') + ' at ' + r.time + '</b><br>' + r.status + ' · ' + r.place +
+      (r.late ? '<br><small>It waited ' + r.late + ' minutes on your phone for a signal. It is recorded at ' + r.time + ', the time you tapped.</small>' : '') +
+      (r.waiting ? '<br><small>You are away from the office, so a manager has to confirm it. You will get a message in Slack.</small>' : '') +
+      (r.flags && r.flags.length ? '<br><small>Note: ' + r.flags.join('; ') + '</small>' : ''), r.waiting ? '' : 'good');
+    if (r.dup) { show('progCard', false); return; }
+    // the selfie rides in the outbox too, so it still goes up even if he closed the page before the signal came back
+    if (!st.photo && it && it.photo) { st.photo = it.photo; st.kind = it.kind; }
+    if (st.photo) setTimeout(function () { sendPhoto(0); }, 300);
+  }
+  function onRefused(r) {
+    ring(100, 'bad', 'Not saved');
+    dot(3, 'bad'); $('t3').textContent = 'Not saved';
+    msg((r && r.error) || 'The server would not accept this. Please tell your manager.', 'err');
+    $('send').disabled = false; $('retake').disabled = false;
+  }
+  /* Press once. From here it is the phone's job, not his. */
   $('send').onclick = function () {
-    $('send').disabled = true; $('retake').disabled = true; $('t3').textContent = 'Marking attendance…'; msg('');
-    show('progCard', true); ring(10, '', 'Marking attendance…');
-    st.nonce = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    var body = JSON.stringify({ u: U, t: T, s: S, kind: st.kind, lat: st.lat, lng: st.lng, acc: st.acc, clientTime: st.clientTime, n: st.nonce, wantPhoto: st.photo ? 1 : 0 });
-    postJSON(body, null, function (sent) {
-      if (!sent) { ring(0, 'bad', 'Could not reach the server'); dot(3, 'bad'); $('t3').textContent = 'Not saved'; msg('Could not reach the server. Check your signal and tap Send again.', 'err'); $('send').disabled = false; $('retake').disabled = false; return; }
-      ring(60, '', 'Saving…');
-      waitFor(st.nonce, 0, function (r) {
-        if (r && r.ok) {
-          ring(100, r.waiting ? '' : 'done', r.waiting ? 'Sent to your manager' : 'Attendance saved ✓');
-          dot(3, 'ok'); $('t3').textContent = r.dup ? 'Already recorded' : (r.waiting ? 'Waiting for your manager' : 'Saved');
-          show('send', false); show('camCard', false);
-          try { if (st.watch) navigator.geolocation.clearWatch(st.watch); } catch (e) { }
-          msg('<b>' + (r.kind === 'In' ? 'Signed in' : 'Signed out') + ' at ' + r.time + '</b><br>' + r.status + ' · ' + r.place +
-            (r.waiting ? '<br><small>You are away from the office, so a manager has to confirm it. You will get a message in Slack.</small>' : '') +
-            (r.flags && r.flags.length ? '<br><small>Note: ' + r.flags.join('; ') + '</small>' : ''), r.waiting ? '' : 'good');
-          if (r.dup) { show('progCard', false); return; }
-          setTimeout(function () { sendPhoto(0); }, 300);
-        } else if (r === null) {
-          ring(100, 'bad', 'No answer yet');
-          dot(3, 'bad'); $('t3').textContent = 'No answer yet';
-          msg('Not sure it was saved. Open the link again to check — if it says signed in, you are done.', 'err');
-          $('send').disabled = false; $('retake').disabled = false;
-        } else {
-          ring(100, 'bad', 'Not saved');
-          dot(3, 'bad'); $('t3').textContent = 'Not saved';
-          msg((r && r.error) || 'Could not save. Please try again.', 'err');
-          $('send').disabled = false; $('retake').disabled = false;
-        }
-      });
-    });
+    $('send').disabled = true; $('retake').disabled = true; msg('');
+    var now = new Date();
+    var it = {
+      id: 'a' + Date.now() + Math.random().toString(36).slice(2, 6),
+      n: Math.random().toString(36).slice(2) + Date.now().toString(36),
+      kind: st.kind, lat: st.lat, lng: st.lng, acc: Math.round(st.acc || 0),
+      ct: st.clientTime || now.toISOString(), wp: st.photo ? 1 : 0, photo: st.photo || null, who: st.name || '',
+      clock: now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }),
+      at: Date.now(), tries: 0
+    };
+    st.pendingId = it.id;
+    var a = boxGet(); a.push(it); boxSet(a);
+    show('progCard', true); ring(25, '', 'Saved on your phone – sending…');
+    dot(3, 'ok'); $('t3').textContent = 'Saved on your phone';
+    msg('Saved on your phone. It goes as soon as there is signal – you can lock the phone and walk on.', 'good');
+    flush(true);
   };
 })();
 </script>
