@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Share my location</title>
+<style>
+  :root { --bg:#f4f6f8; --card:#fff; --ink:#14202b; --mute:#5b6b7a; --ok:#1b7f3b; --bad:#b3261e; --brand:#1f6feb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1720; --card:#17212c; --ink:#e8eef4; --mute:#9db0c1; --ok:#5ad17f; --bad:#ff8a80; --brand:#6ea8ff; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  main { max-width:460px; margin:0 auto; padding:24px 16px 40px; }
+  .card { background:var(--card); border-radius:16px; padding:22px 18px; box-shadow:0 1px 4px rgba(0,0,0,.12); text-align:center; }
+  h1 { font-size:20px; margin:0 0 6px; }
+  p { margin:8px 0; color:var(--mute); }
+  button { width:100%; margin-top:16px; padding:16px; border:0; border-radius:12px; background:var(--brand); color:#fff; font-size:18px; font-weight:600; }
+  button[disabled] { opacity:.6; }
+  .msg { margin-top:14px; padding:12px; border-radius:10px; font-size:15px; }
+  .ok { background:rgba(27,127,59,.12); color:var(--ok); }
+  .err { background:rgba(179,38,30,.12); color:var(--bad); }
+  .hide { display:none; }
+  small { color:var(--mute); }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1 id="who">Where are you?</h1>
+    <p id="state">Tap the button once. Your phone will share where you are right now – no photo needed.</p>
+    <button id="go">Share my location</button>
+    <div id="msg"></div>
+    <p><small>Your location is taken only when you tap the button. Nothing is tracked in between.</small></p>
+  </div>
+</main>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search), U = q.get('u') || '', T = q.get('t') || '', S = q.get('s') || '', C = (q.get('c') || '').replace(/[^A-Za-z0-9]/g, '');
+  var $ = function (id) { return document.getElementById(id); };
+  function msg(t, cls) { $('msg').innerHTML = t ? '<div class="msg ' + (cls || '') + '">' + t + '</div>' : ''; }
+  if (!U || !T || !S || !C) { $('who').textContent = 'Link problem'; msg('This link is incomplete. Use the button in the Slack message again.', 'err'); $('go').classList.add('hide'); return; }
+  // one small request with the answer included; a script tag finishes either with the server's answer or the timeout
+  function send(pos, tries) {
+    var name = 'cb' + Math.random().toString(36).slice(2), s = document.createElement('script'), done = false;
+    var params = { att: 'where', u: U, t: T, c: C, s: S, lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, callback: name };
+    var qs = Object.keys(params).map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+    var finish = function (r) {
+      if (done) return; done = true; try { delete window[name]; } catch (e) { window[name] = undefined; } try { s.remove(); } catch (e) { }
+      if (r && r.ok) { $('who').textContent = 'Thank you'; $('state').textContent = 'Your location is shared.' + (r.place ? ' (' + r.place + ')' : ''); $('go').classList.add('hide'); msg('Now tell the bot in Slack which call or customer you are on.', 'ok'); return; }
+      if (r && r.error) { fail(r.error); return; }
+      if (tries < 3) { send(pos, tries + 1); return; }
+      fail('No answer from the server – check your signal and tap again.');
+    };
+    window[name] = finish;
+    s.onerror = function () { finish(null); };
+    s.src = S + (S.indexOf('?') < 0 ? '?' : '&') + qs;
+    document.head.appendChild(s);
+    setTimeout(function () { finish(null); }, 15000);
+  }
+  function fail(t) { msg(t, 'err'); $('go').disabled = false; $('go').textContent = 'Try again'; }
+  $('go').onclick = function () {
+    msg(''); $('go').disabled = true; $('go').textContent = 'Getting your location…';
+    if (!navigator.geolocation) { fail('This phone cannot share location. Open this link in Chrome or Safari.'); return; }
+    var ok = function (p) { $('go').textContent = 'Sending…'; send(p, 0); };
+    var bad = function (e) { fail(e && e.code === 1 ? 'Please allow Location for this page (tap the lock icon near the address, then Permissions), and try again.' : 'Could not get your location. Switch on GPS, go outside the building if you can, and try again.'); };
+    navigator.geolocation.getCurrentPosition(ok, function () { navigator.geolocation.getCurrentPosition(ok, bad, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }); }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 });
+  };
+})();
+</script>
+</body>
+</html>
