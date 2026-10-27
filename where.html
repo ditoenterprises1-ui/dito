@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Share my location</title>
 <style>
-  :root { --bg:#f4f6f8; --card:#fff; --ink:#14202b; --mute:#5b6b7a; --ok:#1b7f3b; --bad:#b3261e; --brand:#1f6feb; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#0f1720; --card:#17212c; --ink:#e8eef4; --mute:#9db0c1; --ok:#5ad17f; --bad:#ff8a80; --brand:#6ea8ff; } }
+  :root { --bg:#f4f6f8; --card:#fff; --ink:#14202b; --mute:#5b6b7a; --ok:#1b7f3b; --bad:#b3261e; --warn:#9a6700; --brand:#1f6feb; --line:#e1e6eb; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1720; --card:#17212c; --ink:#e8eef4; --mute:#9db0c1; --ok:#5ad17f; --bad:#ff8a80; --warn:#f2c14e; --brand:#6ea8ff; --line:#2a3846; } }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
   main { max-width:460px; margin:0 auto; padding:24px 16px 40px; }
@@ -14,12 +14,19 @@
   h1 { font-size:20px; margin:0 0 6px; }
   p { margin:8px 0; color:var(--mute); }
   button { width:100%; margin-top:16px; padding:16px; border:0; border-radius:12px; background:var(--brand); color:#fff; font-size:18px; font-weight:600; }
+  button.small { margin-top:10px; padding:10px; font-size:15px; background:transparent; color:var(--brand); border:1px solid var(--brand); }
   button[disabled] { opacity:.6; }
   .msg { margin-top:14px; padding:12px; border-radius:10px; font-size:15px; }
   .ok { background:rgba(27,127,59,.12); color:var(--ok); }
   .err { background:rgba(179,38,30,.12); color:var(--bad); }
   .hide { display:none; }
   small { color:var(--mute); }
+  .det { margin-top:16px; text-align:left; font-size:14px; }
+  .det h2 { font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:var(--mute); margin:14px 0 4px; }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:5px 0; border-bottom:1px solid var(--line); }
+  .row span:first-child { color:var(--mute); flex:0 0 42%; }
+  .row span:last-child { text-align:right; word-break:break-word; }
+  .good { color:var(--ok); } .fair { color:var(--warn); } .weak { color:var(--bad); }
 </style>
 </head>
 <body>
@@ -29,6 +36,8 @@
     <p id="state">Tap the button once. Your phone will share where you are right now – no photo needed.</p>
     <button id="go">Share my location</button>
     <div id="msg"></div>
+    <div id="det" class="det hide"></div>
+    <button id="copy" class="small hide">Copy these details</button>
     <p><small>Your location is taken only when you tap the button. Nothing is tracked in between.</small></p>
   </div>
 </main>
@@ -36,33 +45,121 @@
 (function () {
   var q = new URLSearchParams(location.search), U = q.get('u') || '', T = q.get('t') || '', S = q.get('s') || '', C = (q.get('c') || '').replace(/[^A-Za-z0-9]/g, '');
   var $ = function (id) { return document.getElementById(id); };
-  function msg(t, cls) { $('msg').innerHTML = t ? '<div class="msg ' + (cls || '') + '">' + t + '</div>' : ''; }
+  function msg(t, cls) { var b = $('msg'); b.textContent = ''; if (!t) return; var d = document.createElement('div'); d.className = 'msg ' + (cls || ''); d.textContent = t; b.appendChild(d); }
   if (!U || !T || !S || !C) { $('who').textContent = 'Link problem'; msg('This link is incomplete. Use the button in the Slack message again.', 'err'); $('go').classList.add('hide'); return; }
-  // one small request with the answer included; a script tag finishes either with the server's answer or the timeout
-  function send(pos, tries) {
-    var name = 'cb' + Math.random().toString(36).slice(2), s = document.createElement('script'), done = false;
-    var params = { att: 'where', u: U, t: T, c: C, s: S, lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, callback: name };
+
+  /* ---------- the details panel: network, location, server ---------- */
+  var D = { net: {}, loc: {}, srv: {} }, order = { net: [], loc: [], srv: [] };
+  function set(group, key, val, cls) { if (order[group].indexOf(key) < 0) order[group].push(key); D[group][key] = { v: val, c: cls || '' }; draw(); }
+  function draw() {
+    var box = $('det'); box.className = 'det'; box.textContent = '';
+    [['net', 'Signal / network'], ['loc', 'Your location'], ['srv', 'Server']].forEach(function (g) {
+      if (!order[g[0]].length) return;
+      var h = document.createElement('h2'); h.textContent = g[1]; box.appendChild(h);
+      order[g[0]].forEach(function (k) {
+        var r = document.createElement('div'); r.className = 'row';
+        var a = document.createElement('span'), b = document.createElement('span');
+        a.textContent = k; b.textContent = D[g[0]][k].v; if (D[g[0]][k].c) b.className = D[g[0]][k].c;
+        r.appendChild(a); r.appendChild(b); box.appendChild(r);
+      });
+    });
+    $('copy').className = 'small';
+  }
+  function plain() {
+    var out = ['Share my location – details', new Date().toString()];
+    [['net', 'SIGNAL / NETWORK'], ['loc', 'LOCATION'], ['srv', 'SERVER']].forEach(function (g) {
+      if (!order[g[0]].length) return; out.push('', g[1]);
+      order[g[0]].forEach(function (k) { out.push(k + ': ' + D[g[0]][k].v); });
+    });
+    return out.join('\n');
+  }
+  $('copy').onclick = function () {
+    var t = plain();
+    try { navigator.clipboard.writeText(t).then(function () { $('copy').textContent = 'Copied'; }, fallback); } catch (e) { fallback(); }
+    function fallback() { var a = document.createElement('textarea'); a.value = t; document.body.appendChild(a); a.select(); try { document.execCommand('copy'); $('copy').textContent = 'Copied'; } catch (e) { } a.remove(); }
+  };
+
+  /* Signal: a web page cannot read the bars or dBm of the phone. The browser gives its own measurement of the
+   * connection (type, speed, delay), which is what actually matters for sending the location. */
+  function readNet() {
+    var c = navigator.connection || navigator.mozConnection || navigator.webkitConnection || null;
+    var online = navigator.onLine !== false;
+    set('net', 'Internet', online ? 'Connected' : 'OFFLINE', online ? 'good' : 'weak');
+    if (!c) { set('net', 'Connection', 'This phone does not report it'); return { online: online }; }
+    var type = c.effectiveType || '', rtt = c.rtt, dl = c.downlink;
+    var grade = !online ? 'weak' : (type === '4g' && (rtt == null || rtt <= 300)) ? 'good' : (type === '3g' || (rtt != null && rtt > 300)) ? 'fair' : (type === '2g' || type === 'slow-2g') ? 'weak' : 'good';
+    set('net', 'Signal quality', { good: 'Good', fair: 'Fair', weak: 'Weak' }[grade], grade);
+    if (type) set('net', 'Speed class', type.toUpperCase());
+    if (c.type) set('net', 'Link', c.type);
+    if (dl != null) set('net', 'Download speed', dl + ' Mbps');
+    if (rtt != null) set('net', 'Round-trip delay', rtt + ' ms');
+    if (c.saveData) set('net', 'Data saver', 'ON (may slow the page)', 'fair');
+    return { online: online, grade: grade, type: type, rtt: rtt, dl: dl };
+  }
+  window.addEventListener('online', readNet); window.addEventListener('offline', readNet);
+  try { var cn = navigator.connection; if (cn && cn.addEventListener) cn.addEventListener('change', readNet); } catch (e) { }
+  readNet();
+
+  function showLoc(p) {
+    var c = p.coords, acc = Math.round(c.accuracy || 0);
+    set('loc', 'Latitude', c.latitude.toFixed(6));
+    set('loc', 'Longitude', c.longitude.toFixed(6));
+    set('loc', 'Accuracy', '± ' + acc + ' m  (' + (acc <= 30 ? 'good' : acc <= 100 ? 'fair' : 'poor') + ')', acc <= 30 ? 'good' : acc <= 100 ? 'fair' : 'weak');
+    if (c.altitude != null) set('loc', 'Altitude', Math.round(c.altitude) + ' m');
+    if (c.speed != null && c.speed >= 0) set('loc', 'Speed', (Math.round(c.speed * 3.6 * 10) / 10) + ' km/h');
+    if (c.heading != null && !isNaN(c.heading)) set('loc', 'Heading', Math.round(c.heading) + '°');
+    set('loc', 'Fix taken at', new Date(p.timestamp).toLocaleTimeString());
+    set('loc', 'Method', acc <= 50 ? 'GPS' : 'Network / Wi-Fi (rough)');
+  }
+
+  /* ---------- the address the page sends to ---------- */
+  var okAddr = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]+\/exec$/.test(S);
+  function showAddr() {
+    var short = S.replace(/^https:\/\//, ''); if (short.length > 46) short = short.slice(0, 26) + '…' + short.slice(-14);
+    set('srv', 'Address', short, okAddr ? '' : 'weak');
+    if (!okAddr) set('srv', 'Address check', /\/dev(\?|$)/.test(S) ? 'a /dev address – needs a Google login, cannot work on a phone' : 'not a normal …/macros/s/…/exec address', 'weak');
+  }
+  showAddr();
+
+  // one small request with the answer included; a script tag finishes with the server's answer, an error or the timeout
+  function send(pos, tries, t0) {
+    var name = 'cb' + Math.random().toString(36).slice(2), s = document.createElement('script'), done = false, t1 = Date.now();
+    var net = readNet();
+    var params = { att: 'where', u: U, t: T, c: C, s: S, lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, callback: name,
+      net: (net.type || '') + (net.rtt != null ? ' ' + net.rtt + 'ms' : '') + (net.dl != null ? ' ' + net.dl + 'Mbps' : '') };
     var qs = Object.keys(params).map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
-    var finish = function (r) {
-      if (done) return; done = true; try { delete window[name]; } catch (e) { window[name] = undefined; } try { s.remove(); } catch (e) { }
-      if (r && r.ok) { $('who').textContent = 'Thank you'; $('state').textContent = 'Your location is shared.' + (r.place ? ' (' + r.place + ')' : ''); $('go').classList.add('hide'); msg('Now tell the bot in Slack which call or customer you are on.', 'ok'); return; }
-      if (r && r.error) { fail(r.error); return; }
-      if (tries < 3) { send(pos, tries + 1); return; }
-      fail('No answer from the server – check your signal and tap again.');
+    var finish = function (r, why) {
+      if (done) return; done = true; clearTimeout(timer); try { delete window[name]; } catch (e) { window[name] = undefined; } try { s.remove(); } catch (e) { }
+      var ms = Date.now() - t1;
+      if (r && (r.ok || r.error)) {
+        set('srv', 'Answer', r.ok ? 'received in ' + ms + ' ms' : 'refused in ' + ms + ' ms', r.ok ? 'good' : 'weak');
+        if (r.ok) { $('who').textContent = 'Thank you'; $('state').textContent = 'Your location is shared.' + (r.place ? ' (' + r.place + ')' : ''); $('go').classList.add('hide'); msg('Now tell the bot in Slack which call or customer you are on.', 'ok'); return; }
+        fail(r.error); return;
+      }
+      set('srv', 'Try ' + (tries + 1) + ' of 3', why + ' (' + ms + ' ms)', 'weak');
+      // a page came back instead of data: sending again will not help, so say what it means
+      if (why === 'got a web page, not data') { fail('The server answered with a web page instead of data. The web-app address is wrong or not public ("Anyone" access). Tell Dileep and send him the details below.'); return; }
+      if (tries < 2) { send(pos, tries + 1, t0); return; }
+      fail('No answer from the server. ' + (net.online ? 'Your internet is on, so the problem is the web-app address or its deployment – send the details below to Dileep.' : 'Your phone is offline – check your signal and tap again.'));
     };
+    var timer = setTimeout(function () { finish(null, 'no answer in 15 s'); }, 15000);
     window[name] = finish;
-    s.onerror = function () { finish(null); };
+    s.onerror = function () { finish(null, 'blocked or address not found'); };
+    s.onload = function () { if (!done) finish(null, 'got a web page, not data'); };
     s.src = S + (S.indexOf('?') < 0 ? '?' : '&') + qs;
     document.head.appendChild(s);
-    setTimeout(function () { finish(null); }, 15000);
   }
   function fail(t) { msg(t, 'err'); $('go').disabled = false; $('go').textContent = 'Try again'; }
   $('go').onclick = function () {
-    msg(''); $('go').disabled = true; $('go').textContent = 'Getting your location…';
-    if (!navigator.geolocation) { fail('This phone cannot share location. Open this link in Chrome or Safari.'); return; }
-    var ok = function (p) { $('go').textContent = 'Sending…'; send(p, 0); };
-    var bad = function (e) { fail(e && e.code === 1 ? 'Please allow Location for this page (tap the lock icon near the address, then Permissions), and try again.' : 'Could not get your location. Switch on GPS, go outside the building if you can, and try again.'); };
-    navigator.geolocation.getCurrentPosition(ok, function () { navigator.geolocation.getCurrentPosition(ok, bad, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }); }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 });
+    msg(''); $('go').disabled = true; $('go').textContent = 'Getting your location…'; readNet();
+    if (!navigator.geolocation) { set('loc', 'Location', 'This phone cannot share location', 'weak'); fail('This phone cannot share location. Open this link in Chrome or Safari.'); return; }
+    var ok = function (p) { set('loc', 'Location', 'Got it', 'good'); showLoc(p); $('go').textContent = 'Sending…'; send(p, 0); };
+    var bad = function (e) {
+      set('loc', 'Location', e && e.code === 1 ? 'Permission denied' : e && e.code === 3 ? 'Timed out – no GPS fix' : 'Not available', 'weak');
+      fail(e && e.code === 1 ? 'Please allow Location for this page (tap the lock icon near the address, then Permissions), and try again.' : 'Could not get your location. Switch on GPS, go outside the building if you can, and try again.');
+    };
+    set('loc', 'Location', 'Asking the phone…');
+    navigator.geolocation.getCurrentPosition(ok, function () { set('loc', 'Location', 'Trying again with GPS…'); navigator.geolocation.getCurrentPosition(ok, bad, { enableHighAccuracy: true, timeout: 20000, maximumAge: 0 }); }, { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 });
   };
 })();
 </script>
