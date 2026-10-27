@@ -121,33 +121,68 @@
   }
   showAddr();
 
-  // one small request with the answer included; a script tag finishes with the server's answer, an error or the timeout
-  function send(pos, tries, t0) {
-    var name = 'cb' + Math.random().toString(36).slice(2), s = document.createElement('script'), done = false, t1 = Date.now();
+  /* The answer may come back as JSON or as cb({...}). Anything else (a Google page) is not an answer. */
+  function parseAns(t) {
+    t = String(t || '').trim();
+    if (t.charAt(0) === '{') { try { return JSON.parse(t); } catch (e) { return null; } }
+    var i = t.indexOf('('), j = t.lastIndexOf(')');
+    if (i > 0 && j > i && /^[A-Za-z_$][\w$]*$/.test(t.slice(0, i))) { try { return JSON.parse(t.slice(i + 1, j)); } catch (e) { return null; } }
+    return null;
+  }
+  /* One small request with the answer included.
+   * First it is sent WITHOUT the phone's Google cookies: a phone signed in to another Google account
+   * is otherwise sent to a Drive error page instead of to our script. If that way is blocked, the old
+   * script-tag way is tried, and whatever happens is written in the details below. */
+  function send(pos, tries) {
+    var name = 'cb' + Math.random().toString(36).slice(2), s = null, done = false, t1 = Date.now(), timer;
     var net = readNet();
     var params = { att: 'where', u: U, t: T, c: C, s: S, lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, callback: name,
       net: (net.type || '') + (net.rtt != null ? ' ' + net.rtt + 'ms' : '') + (net.dl != null ? ' ' + net.dl + 'Mbps' : '') };
     var qs = Object.keys(params).map(function (k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
-    var finish = function (r, why) {
-      if (done) return; done = true; clearTimeout(timer); try { delete window[name]; } catch (e) { window[name] = undefined; } try { s.remove(); } catch (e) { }
+    var url = S + (S.indexOf('?') < 0 ? '?' : '&') + qs;
+    function finish(r, why, how) {
+      if (done) return; done = true; clearTimeout(timer);
+      try { delete window[name]; } catch (e) { window[name] = undefined; }
+      if (s) { try { s.remove(); } catch (e) { } }
       var ms = Date.now() - t1;
       if (r && (r.ok || r.error)) {
+        if (how) set('srv', 'Sent by', how);
         set('srv', 'Answer', r.ok ? 'received in ' + ms + ' ms' : 'refused in ' + ms + ' ms', r.ok ? 'good' : 'weak');
         if (r.ok) { $('who').textContent = 'Thank you'; $('state').textContent = 'Your location is shared.' + (r.place ? ' (' + r.place + ')' : ''); $('go').classList.add('hide'); msg('Now tell the bot in Slack which call or customer you are on.', 'ok'); return; }
         fail(r.error); return;
       }
       set('srv', 'Try ' + (tries + 1) + ' of 3', why + ' (' + ms + ' ms)', 'weak');
-      // a page came back instead of data: sending again will not help, so say what it means
+      if (why.indexOf('needs a Google login') >= 0) { fail('This phone is signed in to a Google account that cannot open the bot. Open this link in a private / incognito window, or sign out of the extra Google accounts in this browser. Then tap again.'); return; }
       if (why === 'got a web page, not data') { fail('The server answered with a web page instead of data. The web-app address is wrong or not public ("Anyone" access). Tell Dileep and send him the details below.'); return; }
-      if (tries < 2) { send(pos, tries + 1, t0); return; }
+      if (tries < 2) { send(pos, tries + 1); return; }
       fail('No answer from the server. ' + (net.online ? 'Your internet is on, so the problem is the web-app address or its deployment – send the details below to Dileep.' : 'Your phone is offline – check your signal and tap again.'));
-    };
-    var timer = setTimeout(function () { finish(null, 'no answer in 15 s'); }, 15000);
-    window[name] = finish;
-    s.onerror = function () { finish(null, 'blocked or address not found'); };
-    s.onload = function () { if (!done) finish(null, 'got a web page, not data'); };
-    s.src = S + (S.indexOf('?') < 0 ? '?' : '&') + qs;
-    document.head.appendChild(s);
+    }
+    timer = setTimeout(function () { finish(null, 'no answer in 20 s'); }, 20000);
+    // 1. the plain way, with no Google account attached to the request
+    if (window.fetch) {
+      try {
+        fetch(url, { credentials: 'omit', redirect: 'follow', cache: 'no-store' })
+          .then(function (r) { return r.text().then(function (t) { return { s: r.status, t: t }; }); })
+          .then(function (x) {
+            if (done) return;
+            var j = parseAns(x.t);
+            if (j) { finish(j, '', 'direct'); return; }
+            if (/unable to open the file|accounts\.google\.com|ServiceLogin|>Sign in/i.test(x.t)) { finish(null, 'the address needs a Google login (' + x.s + ')'); return; }
+            byScript();
+          })
+          .catch(function () { if (!done) byScript(); });
+      } catch (e) { byScript(); }
+    } else byScript();
+    // 2. the old way, for a browser that will not allow the first
+    function byScript() {
+      if (done || s) return;
+      window[name] = function (r) { finish(r, '', 'script tag'); };
+      s = document.createElement('script');
+      s.onerror = function () { finish(null, 'blocked or address not found'); };
+      s.onload = function () { if (!done) finish(null, 'got a web page, not data'); };
+      s.src = url;
+      document.head.appendChild(s);
+    }
   }
   function fail(t) { msg(t, 'err'); $('go').disabled = false; $('go').textContent = 'Try again'; }
   $('go').onclick = function () {
