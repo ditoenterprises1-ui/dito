@@ -158,7 +158,30 @@
       fail('No answer from the server. ' + (net.online ? 'Your internet is on, so the problem is the web-app address or its deployment – send the details below to Dileep.' : 'Your phone is offline – check your signal and tap again.'));
     }
     timer = setTimeout(function () { finish(null, 'no answer in 20 s'); }, 20000);
-    // 1. the plain way, with no Google account attached to the request
+    // 1. a POST, exactly the way the attendance page sends a visit photo: the path that gets through everywhere
+    byPost();
+    function byPost() {
+      var x = new XMLHttpRequest();
+      x.open('POST', S + (S.indexOf('?') < 0 ? '?' : '&') + 'att=1', true);
+      x.setRequestHeader('Content-Type', 'text/plain;charset=utf-8');
+      x.timeout = 18000;
+      x.onload = function () {
+        if (done) return;
+        var j = parseAns(x.responseText);
+        if (j) { finish(j, '', 'post'); return; }
+        set('srv', 'POST', 'answered ' + x.status + ', not with data', 'weak');
+        byGet();
+      };
+      x.onerror = function () { if (!done) { set('srv', 'POST', 'did not go through', 'weak'); byGet(); } };
+      x.ontimeout = function () { if (!done) { set('srv', 'POST', 'timed out', 'weak'); byGet(); } };
+      try {
+        x.send(JSON.stringify({ u: U, t: T, s: S, where: 1, c: C, n: 'W' + Date.now(),
+          lat: pos.coords.latitude, lng: pos.coords.longitude, acc: pos.coords.accuracy, net: params.net }));
+      } catch (e) { byGet(); }
+    }
+    // 2. the older ways, kept so an older deployment still works
+    function byGet() {
+    if (done) return;
     if (window.fetch) {
       try {
         fetch(url, { credentials: 'omit', redirect: 'follow', cache: 'no-store' })
@@ -173,7 +196,7 @@
           .catch(function () { if (!done) byScript(); });
       } catch (e) { byScript(); }
     } else byScript();
-    // 2. the old way, for a browser that will not allow the first
+    }
     function byScript() {
       if (done || s) return;
       window[name] = function (r) { finish(r, '', 'script tag'); };
