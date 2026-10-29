@@ -270,7 +270,7 @@
       var r = parseAns(text);
       if (r) { landed(r); return; }
       waitFor(it.n, 0, function (r2) { landed(r2 || { ok: false, offline: true }); });   // an older deployment
-    });
+    }, 75000);   // the server writes the row and tells the managers before it answers: it is given time
   }
   function sendVisit(it, landed) {
     show('progCard', true); show('retryPhoto', false);
@@ -444,12 +444,12 @@
     $('ring').className = 'ring ringwrap' + (state ? ' ' + state : '');
     if (label) $('plabel').textContent = label;
   }
-  function postJSON(body, onProgress, done) {   // XHR, because it is the only way to know how much has really gone up
-    var x = new XMLHttpRequest(), over = false, wd = null;
+  function postJSON(body, onProgress, done, silence) {   // XHR, because it is the only way to know how much has really gone up
+    var x = new XMLHttpRequest(), over = false, wd = null, QUIET = silence || 45000;
     var stop = function (okFlag, text, status) { if (over) return; over = true; clearTimeout(wd); done(okFlag, text, status); };
     // a phone that is locked or switched away freezes the page: the request dies and nothing would ever
     // tell us. So it is given 45 seconds of silence at most, then cut off and counted as a failure.
-    var bump = function () { clearTimeout(wd); wd = setTimeout(function () { try { x.abort(); } catch (e) { } stop(false); }, 45000); };
+    var bump = function () { clearTimeout(wd); wd = setTimeout(function () { try { x.abort(); } catch (e) { } stop(false); }, QUIET); };
     x.open('POST', S + (S.indexOf('?') < 0 ? '?' : '&') + 'att=1', true);
     x.setRequestHeader('Content-Type', 'text/plain;charset=utf-8');
     if (x.upload) x.upload.onprogress = function (e) { bump(); if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
@@ -498,6 +498,8 @@
       show('send', false); show('camCard', false);
       msg('<b>Sent.</b><br>Your phone could not reach the server, so your ' + (it.kind === 'out' ? 'sign out' : 'sign in') +
           ' went through Slack with the time you tapped (' + (it.clock || '') + ') and your location.<br>You will get one line from the bot in a moment.', 'good');
+      // the punch is safe; the selfie still belongs to it and goes up on its own as soon as the row exists
+      if (st.photo || photoHeld()) setTimeout(function () { show('progCard', true); photoResume(); if (st.photo && !PBUSY) sendPhoto(0); }, 12000);
     }
     return true;
   }
@@ -566,6 +568,9 @@
       function (f) { ring(5 + f * 90, '', 'Sending the photo…'); }, function (sent, said) {
       PBUSY = false;
       if (said && said.ok) { photoDrop(); st.photo = null; ring(100, 'done', 'Photo saved ✓'); setTimeout(function () { show('progCard', false); }, 2500); return; }
+      if (said && said.ok === false && /Mark your attendance first/i.test(String(said.error || '')) && attempt < 4) {
+        ring(10, '', 'Waiting for your attendance to land…'); setTimeout(function () { sendPhoto(attempt + 1); }, 15000); return;
+      }
       if (said && said.ok === false) { photoDrop(); st.photo = null; ring(100, 'bad', said.error || 'Photo did not save. Your attendance is saved.'); show('retryPhoto', true); return; }
       if (attempt < 3) { ring(0, 'bad', 'Signal dropped – trying again…'); setTimeout(function () { sendPhoto(attempt + 1); }, 1500); return; }
       ring(100, 'bad', 'Photo still waiting. Your attendance is saved – open this page again when you have signal and it goes by itself.');
