@@ -94,7 +94,8 @@
   var q = new URLSearchParams(location.search), U = q.get('u') || '', T = q.get('t') || '', S = q.get('s') || '';
   var W = q.get('w') || '';          // the short way home: a private Slack channel, used only when the script cannot be reached
   var PC = q.get('p') || '';         // the code of the day that goes in the coded line, so the token is never shown there
-  var PAGEV = '2026-10-29';          // which page this phone is running - sent with every mark
+  var PAGEV = '2026-10-29b';         // which page this phone is running - sent with every mark
+  var HOOK_AFTER = 60000;            // how long the normal way is given before the short way is used
   // k=visit&c=<check id>: the same page, used at a customer's gate for one photo of the name board.
   var VISIT = (q.get('k') || '') === 'visit', CHECK = (q.get('c') || '').replace(/[^A-Za-z0-9]/g, '');
   var $ = function (id) { return document.getElementById(id); };
@@ -250,8 +251,8 @@
       top.sending = 0; top.tries = (top.tries || 0) + 1;
       if (top.tries >= 3 && cur.length > 1) { cur.push(cur.shift()); }   // it goes to the back of the queue, never in the way
       boxSet(cur);
-      // the first attempt did not get through: take the short way at once, while the page is still open
-      if (W && !top.hooked && top.tries >= 1) { if (hookSend(top, 'Tried the normal way first: ' + (r && r.offline ? 'no answer from the server.' : 'it did not go through.'))) { schedule(); return; } }
+      // the short way is a last resort, not a first one: two failed attempts, or the minute below runs out
+      if (W && !top.hooked && top.tries >= 2) { if (hookSend(top, 'The normal way was tried twice and did not get through.')) { schedule(); return; } }
       schedule();
     };
     // A visit is one request with the picture inside it, so it goes as a POST with the progress circle.
@@ -309,7 +310,7 @@
     st.name = r.name;
     if (VISIT) { $('who').textContent = 'Hello, ' + r.name; return; }   // a visit never changes the button
     st.kind = r.next === 'out' ? 'out' : 'in';
-    $('who').textContent = 'Hello, ' + r.name;
+    $('who').textContent = r.name ? 'Hello, ' + r.name : 'DiTo Attendance';
     if (r.next === 'done') { $('state').innerHTML = '✅ Signed in and out for today.<br><small>' + (r.rows || []).join(' · ') + '</small>'; show('go', false); return; }
     $('state').innerHTML = r.next === 'in' ? 'You have not signed in yet.' : 'Signed in: ' + (r.rows || []).join(' · ');
     $('go').textContent = r.next === 'in' ? 'Sign in' : 'Sign out'; show('go', true);
@@ -337,11 +338,12 @@
   } else (function () {
     var c = null;
     try { c = JSON.parse(localStorage.getItem(WHO) || 'null'); } catch (e) { }
-    if (c && c.d === new Date().toDateString() && c.r && c.r.name) paintWho(c.r);
+    // what we last knew, even if only the next step: a punch made while the line was down must still show
+    if (c && c.d === new Date().toDateString() && c.r && (c.r.name || c.r.next)) paintWho(c.r);
     who(function (r) {
       if (r && r.ok) { cacheWho(r); paintWho(r); return; }
       if (r && r.offline) {   // the signal, not the link
-        if (!st.name) {
+        if (!PUNCHED && !(c && c.r && c.r.next)) {
           $('who').textContent = c && c.r && c.r.name ? 'Hello, ' + c.r.name : 'Working offline';
           $('state').innerHTML = 'I could not check with the server, so this is from memory.';
           $('go').textContent = 'Sign in'; show('go', true);
@@ -492,6 +494,7 @@
     } else {
       for (var j2 = 0; j2 < cur.length; j2++) if (cur[j2].id === it.id) { cur.splice(j2, 1); break; }
       boxSet(cur); paintBox();
+      nextIs(it.kind === 'out' ? 'Out' : 'In');
       ring(100, 'done', 'Sent the short way ✓');
       dot(3, 'ok'); $('t3').textContent = 'Sent through Slack';
       show('send', false); show('camCard', false);
@@ -556,6 +559,17 @@
   $('retryPhoto').onclick = function () { PBUSY = false; sendPhoto(0); };
   boxClean();
   setTimeout(photoResume, 1500);
+  var PUNCHED = false;
+  function nextIs(kind) {
+    PUNCHED = true;   // he has just punched: the page shows the opposite at once, then checks with the server
+    if (VISIT) return;
+    var nx = kind === 'In' ? 'out' : 'in';
+    try { var c0 = JSON.parse(localStorage.getItem(WHO) || 'null'); var base = (c0 && c0.r) || { name: st.name || '' };
+      base.next = nx; base.rows = base.rows || []; cacheWho(base); } catch (e) { }
+    st.kind = nx;
+    $('go').textContent = nx === 'in' ? 'Sign in' : 'Sign out';
+    setTimeout(function () { who(function (r2) { if (r2 && r2.ok) { cacheWho(r2); paintWho(r2); } }); }, 4000);
+  }
   function onMarked(r, it) {
     if ((it && it.mode === 'visit') || r.kind === 'Visit') {
       ring(100, 'done', r.dup ? 'Already sent ✓' : 'Photo sent ✓');
@@ -567,6 +581,7 @@
       setTimeout(function () { show('progCard', false); }, 3000);
       return;
     }
+    nextIs(r.kind === 'Out' ? 'Out' : 'In');
     ring(100, r.waiting ? '' : 'done', r.waiting ? 'Sent to your manager' : 'Attendance saved ✓');
     dot(3, 'ok'); $('t3').textContent = r.dup ? 'Already recorded' : (r.waiting ? 'Waiting for your manager' : 'Saved');
     show('send', false); show('camCard', false);
@@ -601,6 +616,12 @@
     st.pendingId = it.id;
     if (VISIT) { it.mode = 'visit'; it.c = CHECK; it.wp = 1; }
     var a = boxGet(); a.push(it); boxSet(a);
+    // the page is given a full minute to do it properly. Only then is the short way used, so a slow line
+    // that is working finishes normally instead of being overtaken.
+    setTimeout(function () {
+      var still = boxGet().filter(function (x) { return x.id === it.id; })[0];
+      if (still && !still.hooked && W) hookSend(still, 'A minute went by with no answer from the server.');
+    }, HOOK_AFTER);
     show('progCard', true); ring(25, '', 'Saved on your phone – sending…');
     dot(3, 'ok'); $('t3').textContent = 'Saved on your phone';
     msg('Saved on your phone. It goes as soon as there is signal – you can lock the phone and walk on.', 'good');
