@@ -86,7 +86,9 @@
   <button id="go" class="hide">Sign in</button>
   <button id="send" class="hide">Send</button>
   <div id="msg"></div>
-  <p class="sub center" style="margin-top:18px"><small id="foot">Your location and selfie are taken only when you tap the button, to mark attendance. Nothing is tracked in between.</small></p>
+  <p class="sub center" style="margin-top:14px"><small id="ver">Page v…</small></p>
+  <p class="sub center" style="margin-top:4px"><small><a href="#" id="clr" style="color:inherit">Clear stuck items</a></small></p>
+  <p class="sub center" style="margin-top:6px"><small id="foot">Your location and selfie are taken only when you tap the button, to mark attendance. Nothing is tracked in between.</small></p>
 </main>
 
 <script>
@@ -94,7 +96,7 @@
   var q = new URLSearchParams(location.search), U = q.get('u') || '', T = q.get('t') || '', S = q.get('s') || '';
   var W = q.get('w') || '';          // the short way home: a private Slack channel, used only when the script cannot be reached
   var PC = q.get('p') || '';         // the code of the day that goes in the coded line, so the token is never shown there
-  var PAGEV = '2026-10-29b';         // which page this phone is running - sent with every mark
+  var PAGEV = '2026-10-29d';         // which page this phone is running - sent with every mark
   var HOOK_AFTER = 60000;            // how long the normal way is given before the short way is used
   // k=visit&c=<check id>: the same page, used at a customer's gate for one photo of the name board.
   var VISIT = (q.get('k') || '') === 'visit', CHECK = (q.get('c') || '').replace(/[^A-Za-z0-9]/g, '');
@@ -303,9 +305,54 @@
      him looking at a page with no button on it. The server refuses a second mark anyway, so offering the
      button when we are not sure costs nothing. */
   var WHO = 'ditoWho_' + U;
+  function showVer(want) {
+    var el = $('ver'); if (!el) return;
+    if (!want) { el.textContent = 'Page v' + PAGEV; el.style.color = ''; return; }
+    if (String(want) === PAGEV) { el.textContent = '\u2705 Page v' + PAGEV + ' – latest'; el.style.color = '#1b7f3b'; return; }
+    el.innerHTML = '\u26A0\uFE0F Page v' + PAGEV + ' is old (latest is v' + want + ') \u2013 <a href="#" id="verfix">tap to update</a>';
+    el.style.color = '#b3261e';
+    var a = $('verfix');
+    if (a) a.onclick = function (e) {
+      e.preventDefault();
+      try { if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) navigator.serviceWorker.getRegistrations().then(function (rs) { rs.forEach(function (r2) { r2.unregister(); }); }); } catch (x) { }
+      try { if (window.caches && caches.keys) caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); }); } catch (x) { }
+      var u = location.href.replace(/[?&]cb=\d+/, '');
+      location.replace(u + (u.indexOf('?') < 0 ? '?' : '&') + 'cb=' + Date.now());
+    };
+  }
+  showVer('');
+  /* Everything this page has kept on the phone: the queue, a photo still waiting, the remembered name.
+     Two taps, because whatever has not gone up yet is thrown away and cannot be brought back. */
+  var CLR = false;
+  $('clr').onclick = function (e) {
+    e.preventDefault();
+    var n = 0; try { n = boxGet().length; } catch (x) { }
+    var held = false; try { held = !!localStorage.getItem('ditoPhoto_' + U); } catch (x) { }
+    if (!CLR) {
+      CLR = true;
+      $('clr').textContent = n || held
+        ? 'Tap again to throw away ' + (n ? n + ' waiting item' + (n > 1 ? 's' : '') : '') + (n && held ? ' and ' : '') + (held ? 'a waiting photo' : '')
+        : 'Nothing is waiting – tap again to clean up anyway';
+      setTimeout(function () { CLR = false; $('clr').textContent = 'Clear stuck items'; }, 7000);
+      return;
+    }
+    try { hookNote('cleared the phone: ' + n + ' waiting item' + (n === 1 ? '' : 's') + (held ? ' and a waiting photo' : '')); } catch (x) { }
+    try { localStorage.removeItem('ditoAtt_' + U); } catch (x) { }
+    try { localStorage.removeItem('ditoPhoto_' + U); } catch (x) { }
+    try { localStorage.removeItem('ditoWho_' + U); } catch (x) { }
+    try { indexedDB.deleteDatabase('dito-att'); } catch (x) { }
+    try { if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) navigator.serviceWorker.getRegistrations().then(function (rs) { rs.forEach(function (r2) { r2.unregister(); }); }); } catch (x) { }
+    try { if (window.caches && caches.keys) caches.keys().then(function (ks) { ks.forEach(function (k) { caches.delete(k); }); }); } catch (x) { }
+    $('clr').textContent = 'Cleared – reloading…';
+    setTimeout(function () {
+      var u = location.href.replace(/[?&]cb=\d+/, '');
+      location.replace(u + (u.indexOf('?') < 0 ? '?' : '&') + 'cb=' + Date.now());
+    }, 900);
+  };
   function cacheWho(r) { try { localStorage.setItem(WHO, JSON.stringify({ d: new Date().toDateString(), r: r })); } catch (e) { } }
   function paintWho(r) {
     st.name = r.name;
+    if (r.want !== undefined) showVer(r.want);
     if (VISIT) { $('who').textContent = 'Hello, ' + r.name; return; }   // a visit never changes the button
     st.kind = r.next === 'out' ? 'out' : 'in';
     $('who').textContent = r.name ? 'Hello, ' + r.name : 'DiTo Attendance';
