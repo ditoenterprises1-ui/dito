@@ -92,6 +92,8 @@
 <script>
 (function () {
   var q = new URLSearchParams(location.search), U = q.get('u') || '', T = q.get('t') || '', S = q.get('s') || '';
+  var W = q.get('w') || '';          // the short way home: a private Slack channel, used only when the script cannot be reached
+  var PAGEV = '2026-10-29';          // which page this phone is running - sent with every mark
   // k=visit&c=<check id>: the same page, used at a customer's gate for one photo of the name board.
   var VISIT = (q.get('k') || '') === 'visit', CHECK = (q.get('c') || '').replace(/[^A-Za-z0-9]/g, '');
   var $ = function (id) { return document.getElementById(id); };
@@ -108,6 +110,18 @@
   }
   // One small GET, answer included. A script tag is the most forgiving thing there is on a bad line, and
   // it always finishes: either the server answers, or the timeout does.
+  /* "who am I": tried as a POST first, because a plain GET is the one thing some phones cannot get through.
+     The old GET stays as the second try, for an older deployment that does not answer a POST. */
+  function who(cb) {
+    var done = false, fin = function (r) { if (done) return; done = true; cb(r); };
+    try {
+      postJSON(JSON.stringify({ u: U, t: T, s: S, v: PAGEV, who: 1 }), null, function (sent, text) {
+        var r = sent ? parseAns(text) : null;
+        if (r && r.ok) { netSeen(true); fin(r); return; }
+        jsonp({ att: 'who', u: U, t: T }, fin);
+      });
+    } catch (e) { jsonp({ att: 'who', u: U, t: T }, fin); }
+  }
   function jsonp(params, cb, ms) {
     var name = 'cb' + Math.random().toString(36).slice(2), s = document.createElement('script'), done = false;
     var finish = function (d) {
@@ -145,7 +159,7 @@
   window.addEventListener('online', function () { paintNet(); flush(true); });
   window.addEventListener('offline', paintNet);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) { paintNet(); flush(true); } });
-  $('tryNow').onclick = function () { netSeen(null); flush(true); if (!boxGet().length) jsonp({ att: 'who', u: U, t: T }, function (r) { if (r && r.ok) { cacheWho(r); paintWho(r); } }); };
+  $('tryNow').onclick = function () { netSeen(null); flush(true); if (!boxGet().length) who(function (r) { if (r && r.ok) { cacheWho(r); paintWho(r); } }); };
 
   /* ---------- the outbox: a tap is never lost ----------
    * The mark is written here the moment he presses Send. From then on it is only a question of when it goes,
@@ -179,7 +193,7 @@
         a.forEach(function (x) {
           var c = {}; for (var k in x) if (k !== 'photo') c[k] = x[k];
           if (x.mode === 'visit') { c.url = S + (S.indexOf('?') < 0 ? '?' : '&') + 'att=1'; c.body = visitBody(x); }
-          else c.url = url({ att: 'mark', u: U, t: T, kind: x.kind, lat: x.lat, lng: x.lng, acc: x.acc, ct: x.ct, wp: x.wp, n: x.n });
+          else { c.url = S + (S.indexOf('?') < 0 ? '?' : '&') + 'att=1'; c.body = JSON.stringify({ u: U, t: T, s: S, v: PAGEV, kind: x.kind, lat: x.lat, lng: x.lng, acc: x.acc, ct: x.ct, wp: x.wp, n: x.n }); }
           os.put(c);
         });
       } catch (e) { }
@@ -218,20 +232,37 @@
         cur.shift(); boxSet(cur); onRefused(r); schedule(); return;
       }
       top.sending = 0; top.tries = (top.tries || 0) + 1; boxSet(cur);
+      // the first attempt did not get through: take the short way at once, while the page is still open
+      if (W && !top.hooked && top.tries >= 1) { if (hookSend(top, 'Tried the normal way first: ' + (r && r.offline ? 'no answer from the server.' : 'it did not go through.'))) { schedule(); return; } }
       schedule();
     };
     // A visit is one request with the picture inside it, so it goes as a POST with the progress circle.
     if (it.mode === 'visit') { sendVisit(it, landed); return; }
-    jsonp({ att: 'mark', u: U, t: T, kind: it.kind, lat: it.lat, lng: it.lng, acc: it.acc, ct: it.ct, wp: it.wp, n: it.n }, landed);
+    postMark(it, landed);
+  }
+  /* One POST, the answer included. The old way asked with a GET and then polled for the answer; a GET is the
+     one thing that does not always get through, so a punch could be lost without anybody knowing. */
+  function postMark(it, landed) {
+    var body = JSON.stringify({ u: U, t: T, s: S, v: PAGEV, kind: it.kind, lat: it.lat, lng: it.lng,
+      acc: it.acc, ct: it.ct, wp: it.wp, n: it.n });
+    postJSON(body, null, function (sent, text) {
+      if (!sent) { netSeen(false); landed({ ok: false, offline: true }); return; }
+      netSeen(true);
+      var r = parseAns(text);
+      if (r) { landed(r); return; }
+      waitFor(it.n, 0, function (r2) { landed(r2 || { ok: false, offline: true }); });   // an older deployment
+    });
   }
   function sendVisit(it, landed) {
     show('progCard', true); show('retryPhoto', false);
     ring(5, '', 'Sending the photo…');
-    postJSON(visitBody(it), function (f) { ring(5 + f * 85, '', 'Sending the photo…'); }, function (sent) {
+    postJSON(visitBody(it), function (f) { ring(5 + f * 85, '', 'Sending the photo…'); }, function (sent, text) {
       if (!sent) { netSeen(false); landed({ ok: false, offline: true }); return; }
       netSeen(true);
       ring(95, '', 'Saving…');
-      waitFor(it.n, 0, function (r) { landed(r || { ok: false, offline: true }); });
+      var r = parseAns(text);
+      if (r) { landed(r); return; }
+      waitFor(it.n, 0, function (r2) { landed(r2 || { ok: false, offline: true }); });
     });
   }
   function schedule() {
@@ -279,7 +310,7 @@
       if (c && c.r && c.r.name) st.name = c.r.name;
       if (!CHECK) { $('who').textContent = 'Link problem'; msg('This photo link is incomplete. Save the call again and use the new link.', 'err'); show('go', false); return; }
       $('who').textContent = st.name ? 'Hello, ' + st.name : 'Visit photo';
-      jsonp({ att: 'who', u: U, t: T }, function (r) { if (r && r.ok) { cacheWho(r); paintWho(r); } });
+      who(function (r) { if (r && r.ok) { cacheWho(r); paintWho(r); } });
       var qv = boxGet(), dv = false;
       qv.forEach(function (x) { if (x.sending) { x.sending = 0; dv = true; } });
       if (dv) boxSet(qv);
@@ -289,7 +320,7 @@
     var c = null;
     try { c = JSON.parse(localStorage.getItem(WHO) || 'null'); } catch (e) { }
     if (c && c.d === new Date().toDateString() && c.r && c.r.name) paintWho(c.r);
-    jsonp({ att: 'who', u: U, t: T }, function (r) {
+    who(function (r) {
       if (r && r.ok) { cacheWho(r); paintWho(r); return; }
       if (r && r.offline) {   // the signal, not the link
         if (!st.name) {
@@ -400,11 +431,50 @@
     x.open('POST', S + (S.indexOf('?') < 0 ? '?' : '&') + 'att=1', true);
     x.setRequestHeader('Content-Type', 'text/plain;charset=utf-8');
     if (x.upload && onProgress) x.upload.onprogress = function (e) { if (e.lengthComputable) onProgress(e.loaded / e.total); };
-    x.onload = function () { done(true); };
+    x.onload = function () { done(true, x.responseText, x.status); };
     x.onerror = function () { done(false); };
     x.ontimeout = function () { done(false); };
     x.timeout = 120000;
     try { x.send(body); } catch (e) { done(false); }
+  }
+  function parseAns(t) {
+    t = String(t || '').trim();
+    if (t.charAt(0) === '{') { try { return JSON.parse(t); } catch (e) { return null; } }
+    var i = t.indexOf('('), j = t.lastIndexOf(')');
+    if (i > 0 && j > i && /^[A-Za-z_$][\w$]*$/.test(t.slice(0, i))) { try { return JSON.parse(t.slice(i + 1, j)); } catch (e) { return null; } }
+    return null;
+  }
+  /* THE SHORT WAY HOME. The script cannot be reached, so the punch itself goes into the private Slack
+     channel as one coded line and the bot writes it from there. Nothing for anybody to upload or type.
+     A picture cannot travel this way, so a visit keeps its photo in the outbox and goes on trying. */
+  function hookSend(it, why) {
+    if (!W || it.hooked) return false;
+    it.hooked = 1;
+    var ms = Date.parse(it.ct || '') || it.at || Date.now();
+    var num = function (v, d) { return (v === null || v === undefined || v === '' || isNaN(v)) ? '' : (+v).toFixed(d); };
+    var line = ['#ATT', '1', U, (it.mode === 'visit' ? 'visit' : (it.kind === 'out' ? 'out' : 'in')), (it.c || ''),
+      String(ms), num(it.lat, 6), num(it.lng, 6), String(Math.round(it.acc || 0)), it.n, T].join('|');
+    try {
+      fetch(W, { method: 'POST', mode: 'no-cors', cache: 'no-store', credentials: 'omit',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'payload=' + encodeURIComponent(JSON.stringify({ text: line })) });
+    } catch (e) { it.hooked = 0; return false; }
+    var cur = boxGet();
+    if (it.mode === 'visit') {
+      for (var i = 0; i < cur.length; i++) if (cur[i].id === it.id) { cur[i].hooked = 1; cur[i].sending = 0; }
+      boxSet(cur);
+      ring(70, '', 'Location sent the short way');
+      msg('<b>Your location has gone through Slack.</b><br>The photo is still waiting for a signal and keeps trying by itself.<br><small>' + (why || '') + '</small>', 'good');
+    } else {
+      for (var j2 = 0; j2 < cur.length; j2++) if (cur[j2].id === it.id) { cur.splice(j2, 1); break; }
+      boxSet(cur); paintBox();
+      ring(100, 'done', 'Sent the short way ✓');
+      dot(3, 'ok'); $('t3').textContent = 'Sent through Slack';
+      show('send', false); show('camCard', false);
+      msg('<b>Sent.</b><br>Your phone could not reach the server, so your ' + (it.kind === 'out' ? 'sign out' : 'sign in') +
+          ' went through Slack with the time you tapped (' + (it.clock || '') + ') and your location.<br>You will get one line from the bot in a moment.', 'good');
+    }
+    return true;
   }
   function waitFor(nonce, tries, cb) {
     jsonp({ att: 'res', u: U, t: T, n: nonce }, function (r) {
@@ -422,7 +492,10 @@
     ring(0, '', 'Sending the photo…');
     var n2 = 'p' + Math.random().toString(36).slice(2) + Date.now().toString(36);
     var body = JSON.stringify({ u: U, t: T, s: S, kind: st.kind, n: n2, photoOnly: 1, photo: st.photo });
-    postJSON(body, function (f) { ring(5 + f * 85, '', 'Sending the photo…'); }, function (sent) {
+    postJSON(body, function (f) { ring(5 + f * 85, '', 'Sending the photo…'); }, function (sent, text) {
+      var said = sent ? parseAns(text) : null;
+      if (said && said.ok) { ring(100, 'done', 'Photo saved ✓'); setTimeout(function () { show('progCard', false); }, 2500); return; }
+      if (said && said.ok === false) { ring(100, 'bad', said.error || 'Photo did not save. Your attendance is saved.'); show('retryPhoto', true); return; }
       if (!sent) {
         if (attempt < 2) { ring(0, 'bad', 'Signal dropped – trying again…'); setTimeout(function () { sendPhoto(attempt + 1); }, 1500); return; }
         ring(100, 'bad', 'Photo did not go. Your attendance is saved.');
