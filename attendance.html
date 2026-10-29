@@ -86,7 +86,7 @@
   <button id="go" class="hide">Sign in</button>
   <button id="send" class="hide">Send</button>
   <div id="msg"></div>
-  <p class="sub center" style="margin-top:14px"><small id="ver">Page v…</small></p>
+  <p class="sub center" style="margin-top:14px"><small id="ver">Page v…</small><br><small id="srv">Server: checking…</small></p>
   <p class="sub center" style="margin-top:4px"><small><a href="#" id="clr" style="color:inherit">Clear stuck items</a></small></p>
   <p class="sub center" style="margin-top:6px"><small id="foot">Your location and selfie are taken only when you tap the button, to mark attendance. Nothing is tracked in between.</small></p>
 </main>
@@ -96,7 +96,8 @@
   var q = new URLSearchParams(location.search), U = q.get('u') || '', T = q.get('t') || '', S = q.get('s') || '';
   var W = q.get('w') || '';          // the short way home: a private Slack channel, used only when the script cannot be reached
   var PC = q.get('p') || '';         // the code of the day that goes in the coded line, so the token is never shown there
-  var PAGEV = '2026-10-29d';         // which page this phone is running - sent with every mark
+  var PAGEV = '2026-10-29e';
+  var SRVV = '2026-10-29e';          // the server code this page needs (Code.gs: BOT_VERSION)         // which page this phone is running - sent with every mark
   var HOOK_AFTER = 60000;            // how long the normal way is given before the short way is used
   // k=visit&c=<check id>: the same page, used at a customer's gate for one photo of the name board.
   var VISIT = (q.get('k') || '') === 'visit', CHECK = (q.get('c') || '').replace(/[^A-Za-z0-9]/g, '');
@@ -299,12 +300,21 @@
   }
   setInterval(tick, 20000); tick();
 
+  try { $('ver').textContent = 'Page v' + PAGEV; } catch (e) { }
   if (!U || !T || !S) { $('who').textContent = 'This link is incomplete.'; msg('Please ask the bot for "my attendance link" in Slack and open that link.', 'err'); return; }
 
   /* Who he is and what he should press. Remembered from the last good load, so a dead signal never leaves
      him looking at a page with no button on it. The server refuses a second mark anyway, so offering the
      button when we are not sure costs nothing. */
   var WHO = 'ditoWho_' + U;
+  function showSrv(v) {
+    var el = $('srv'); if (!el) return;
+    if (v === SRVV) { el.textContent = '\u2705 Server v' + v + ' – latest'; el.style.color = '#1b7f3b'; return; }
+    el.textContent = '\u26A0\uFE0F Server code is ' + (v ? 'v' + v : 'an older copy') + ' – needs v' + SRVV +
+      '. In Apps Script: Deploy → Manage deployments → pencil → Version: New version → Deploy.';
+    el.style.color = '#b3261e';
+    if (!showSrv.told) { showSrv.told = 1; try { hookNote('this phone talks to OLD server code (' + (v || 'no version') + ', needs ' + SRVV + ') – deploy a new version'); } catch (e) { } }
+  }
   function showVer(want) {
     var el = $('ver'); if (!el) return;
     if (!want) { el.textContent = 'Page v' + PAGEV; el.style.color = ''; return; }
@@ -352,7 +362,8 @@
   function cacheWho(r) { try { localStorage.setItem(WHO, JSON.stringify({ d: new Date().toDateString(), r: r })); } catch (e) { } }
   function paintWho(r) {
     st.name = r.name;
-    if (r.want !== undefined) showVer(r.want);
+    showVer(r.want === undefined ? '' : r.want);
+    showSrv(r.srv || '');
     if (VISIT) { $('who').textContent = 'Hello, ' + r.name; return; }   // a visit never changes the button
     st.kind = r.next === 'out' ? 'out' : 'in';
     $('who').textContent = r.name ? 'Hello, ' + r.name : 'DiTo Attendance';
@@ -582,7 +593,7 @@
   function photoResume() {   // the page was opened or looked at again: finish what is still waiting
     if (PBUSY || st.photo) return;
     var h = photoHeld(); if (!h) return;
-    st.photo = h.photo; st.kind = h.kind || st.kind;
+    st.photo = h.photo; st.photoKind = h.kind || st.photoKind || st.kind;
     show('progCard', true); sendPhoto(0);
   }
   document.addEventListener('visibilitychange', function () { if (!document.hidden) { photoResume(); flush(); } });
@@ -621,11 +632,11 @@
   function sendPhoto(attempt) {
     if (!st.photo) return;
     PBUSY = true;
-    photoKeep(st.kind, st.photo);
+    photoKeep(st.photoKind || st.kind, st.photo);
     show('progCard', true); show('retryPhoto', false);
     ring(0, '', 'Sending the photo…');
     var n2 = 'p' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-    sendPieces({ kind: st.kind, n: n2, photoOnly: 1 }, st.photo,
+    sendPieces({ kind: st.photoKind || st.kind, n: n2, photoOnly: 1 }, st.photo,
       function (f) { ring(5 + f * 90, '', 'Sending the photo…'); }, function (sent, said) {
       PBUSY = false;
       if (said && said.ok) { photoDrop(); st.photo = null; ring(100, 'done', 'Photo saved ✓'); setTimeout(function () { show('progCard', false); }, 2500); return; }
@@ -674,7 +685,8 @@
       (r.flags && r.flags.length ? '<br><small>Note: ' + r.flags.join('; ') + '</small>' : ''), r.waiting ? '' : 'good');
     if (r.dup) { show('progCard', false); return; }
     // the selfie rides in the outbox too, so it still goes up even if he closed the page before the signal came back
-    if (!st.photo && it && it.photo) { st.photo = it.photo; st.kind = it.kind; }
+    if (!st.photo && it && it.photo) { st.photo = it.photo; }
+    if (it && it.kind) st.photoKind = it.kind;   // the selfie goes with THIS punch, not with the next button
     if (st.photo) setTimeout(function () { sendPhoto(0); }, 300);
   }
   function onRefused(r) {
@@ -696,6 +708,7 @@
       at: Date.now(), tries: 0
     };
     st.pendingId = it.id;
+    st.photoKind = it.kind;
     if (VISIT) { it.mode = 'visit'; it.c = CHECK; it.wp = 1; }
     var a = boxGet(); a.push(it); boxSet(a);
     // the page is given a full minute to do it properly. Only then is the short way used, so a slow line
