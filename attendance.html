@@ -503,6 +503,17 @@
     }
     return true;
   }
+  /* A line into the private punch channel saying what happened to a photo. The bot ignores anything that is
+     not a coded punch, so this is only for human eyes - and it is the only way to see, from the outside,
+     what a phone on a bad line really did. */
+  function hookNote(text) {
+    if (!W) return;
+    try {
+      fetch(W, { method: 'POST', mode: 'no-cors', cache: 'no-store', credentials: 'omit',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'payload=' + encodeURIComponent(JSON.stringify({ text: '\uD83D\uDCF7 ' + (st.name || U) + ' · ' + text })) });
+    } catch (e) { }
+  }
   function waitFor(nonce, tries, cb) {
     jsonp({ att: 'res', u: U, t: T, n: nonce }, function (r) {
       if (r && r.pending) {
@@ -537,22 +548,25 @@
     var raw = String(dataUrl).replace(/^data:image\/\w+;base64,/, '');
     var n = Math.max(1, Math.ceil(raw.length / PIECE));
     var id = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-    var i = 0, tries = 0;
+    var i = 0, tries = 0, t0 = Date.now(), lastStatus = '';
     (function step() {
       if (i >= n) return;
       var body = JSON.stringify({ u: U, t: T, s: S, v: PAGEV, chunk: 1, id: id, i: i, n: n,
         data: raw.slice(i * PIECE, (i + 1) * PIECE), meta: i === 0 ? meta : null });
       postJSON(body, null, function (sent, text) {
         var r = sent ? parseAns(text) : null;
+        lastStatus = sent ? ('answered, but not with data (' + String(text || '').slice(0, 60) + ')') : 'no answer';
         if (!r) {
           tries++;
-          if (tries > 4) { done(false, null); return; }
+          if (tries > 4) { hookNote('photo stopped at piece ' + (i + 1) + ' of ' + n + ' – ' + lastStatus + ' (tried 5 times, ' + Math.round((Date.now() - t0) / 1000) + ' s)'); done(false, null); return; }
           setTimeout(step, 1200 * tries);     // the same piece again, nothing else is lost
           return;
         }
         tries = 0; i++;
         if (onProgress) onProgress(i / n);
         if (r.waiting) { step(); return; }
+        if (r.ok) hookNote('photo saved – ' + n + ' piece' + (n > 1 ? 's' : '') + ' in ' + Math.round((Date.now() - t0) / 1000) + ' s');
+        else hookNote('photo refused by the server: ' + String(r.error || '').slice(0, 80));
         done(true, r);                        // the last piece comes back with the server's answer
       });
     })();
@@ -643,6 +657,7 @@
       var still = boxGet().filter(function (x) { return x.id === it.id; })[0];
       if (still && !still.hooked && W) hookSend(still, 'A minute went by with no answer from the server.');
     }, HOOK_AFTER);
+    if (!st.photo && !VISIT) hookNote('punched with NO selfie taken (' + it.kind + ')');
     show('progCard', true); ring(25, '', 'Saved on your phone – sending…');
     dot(3, 'ok'); $('t3').textContent = 'Saved on your phone';
     msg('Saved on your phone. It goes as soon as there is signal – you can lock the phone and walk on.', 'good');
