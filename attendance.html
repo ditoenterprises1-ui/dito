@@ -167,6 +167,21 @@
    * never whether. The same copy is mirrored into IndexedDB so the service worker can send it with the page shut. */
   var BOX = 'ditoAtt_' + U, DB = null, TIMER = null, STEPS = [0, 5, 15, 30, 60, 120, 300];
   function boxGet() { try { return JSON.parse(localStorage.getItem(BOX) || '[]'); } catch (e) { return []; } }
+  /* Yesterday's stuck photo must never hold up today's punch: the queue is cleaned the moment the page opens,
+     and whatever is thrown away is said out loud, never swallowed. */
+  function boxClean() {
+    var a = boxGet(), keep = [], gone = 0, cut = Date.now() - 20 * 3600000;
+    for (var i = 0; i < a.length; i++) {
+      if ((a[i].at || 0) < cut) { gone++; continue; }
+      a[i].sending = 0; keep.push(a[i]);
+    }
+    if (gone) {
+      boxSet(keep);
+      msg('<b>' + gone + ' old item' + (gone > 1 ? 's' : '') + ' from an earlier day could not be sent and ' + (gone > 1 ? 'have' : 'has') + ' been cleared.</b><br>Your manager has the attendance from those days anyway. Today starts clean.', '');
+    }
+    var h = null; try { h = JSON.parse(localStorage.getItem('ditoPhoto_' + U) || 'null'); } catch (e) { h = null; }
+    if (h && h.day !== new Date().toDateString()) { try { localStorage.removeItem('ditoPhoto_' + U); } catch (e) { } }
+  }
   function boxSet(a) {
     try { localStorage.setItem(BOX, JSON.stringify(a)); }
     catch (e) {   // the phone's storage is full: the attendance matters, the selfie does not
@@ -232,7 +247,9 @@
       if (r && r.ok === false && !r.offline && !r.retry) {   // the server refused it: trying again will not help
         cur.shift(); boxSet(cur); onRefused(r); schedule(); return;
       }
-      top.sending = 0; top.tries = (top.tries || 0) + 1; boxSet(cur);
+      top.sending = 0; top.tries = (top.tries || 0) + 1;
+      if (top.tries >= 3 && cur.length > 1) { cur.push(cur.shift()); }   // it goes to the back of the queue, never in the way
+      boxSet(cur);
       // the first attempt did not get through: take the short way at once, while the page is still open
       if (W && !top.hooked && top.tries >= 1) { if (hookSend(top, 'Tried the normal way first: ' + (r && r.offline ? 'no answer from the server.' : 'it did not go through.'))) { schedule(); return; } }
       schedule();
@@ -537,6 +554,7 @@
     });
   }
   $('retryPhoto').onclick = function () { PBUSY = false; sendPhoto(0); };
+  boxClean();
   setTimeout(photoResume, 1500);
   function onMarked(r, it) {
     if ((it && it.mode === 'visit') || r.kind === 'Visit') {
