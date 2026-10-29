@@ -93,6 +93,7 @@
 (function () {
   var q = new URLSearchParams(location.search), U = q.get('u') || '', T = q.get('t') || '', S = q.get('s') || '';
   var W = q.get('w') || '';          // the short way home: a private Slack channel, used only when the script cannot be reached
+  var PC = q.get('p') || '';         // the code of the day that goes in the coded line, so the token is never shown there
   var PAGEV = '2026-10-29';          // which page this phone is running - sent with every mark
   // k=visit&c=<check id>: the same page, used at a customer's gate for one photo of the name board.
   var VISIT = (q.get('k') || '') === 'visit', CHECK = (q.get('c') || '').replace(/[^A-Za-z0-9]/g, '');
@@ -427,15 +428,21 @@
     if (label) $('plabel').textContent = label;
   }
   function postJSON(body, onProgress, done) {   // XHR, because it is the only way to know how much has really gone up
-    var x = new XMLHttpRequest();
+    var x = new XMLHttpRequest(), over = false, wd = null;
+    var stop = function (okFlag, text, status) { if (over) return; over = true; clearTimeout(wd); done(okFlag, text, status); };
+    // a phone that is locked or switched away freezes the page: the request dies and nothing would ever
+    // tell us. So it is given 45 seconds of silence at most, then cut off and counted as a failure.
+    var bump = function () { clearTimeout(wd); wd = setTimeout(function () { try { x.abort(); } catch (e) { } stop(false); }, 45000); };
     x.open('POST', S + (S.indexOf('?') < 0 ? '?' : '&') + 'att=1', true);
     x.setRequestHeader('Content-Type', 'text/plain;charset=utf-8');
-    if (x.upload && onProgress) x.upload.onprogress = function (e) { if (e.lengthComputable) onProgress(e.loaded / e.total); };
-    x.onload = function () { done(true, x.responseText, x.status); };
-    x.onerror = function () { done(false); };
-    x.ontimeout = function () { done(false); };
+    if (x.upload) x.upload.onprogress = function (e) { bump(); if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+    x.onload = function () { stop(true, x.responseText, x.status); };
+    x.onerror = function () { stop(false); };
+    x.ontimeout = function () { stop(false); };
     x.timeout = 120000;
-    try { x.send(body); } catch (e) { done(false); }
+    bump();
+    try { x.send(body); } catch (e) { stop(false); }
+    return x;
   }
   function parseAns(t) {
     t = String(t || '').trim();
@@ -453,7 +460,7 @@
     var ms = Date.parse(it.ct || '') || it.at || Date.now();
     var num = function (v, d) { return (v === null || v === undefined || v === '' || isNaN(v)) ? '' : (+v).toFixed(d); };
     var line = ['#ATT', '1', U, (it.mode === 'visit' ? 'visit' : (it.kind === 'out' ? 'out' : 'in')), (it.c || ''),
-      String(ms), num(it.lat, 6), num(it.lng, 6), String(Math.round(it.acc || 0)), it.n, T].join('|');
+      String(ms), num(it.lat, 6), num(it.lng, 6), String(Math.round(it.acc || 0)), it.n, (PC || T)].join('|');
     try {
       fetch(W, { method: 'POST', mode: 'no-cors', cache: 'no-store', credentials: 'omit',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -486,31 +493,51 @@
       cb(r);
     });
   }
+  var PKEY = 'ditoPhoto_' + U;
+  function photoKeep(kind, data) { try { localStorage.setItem(PKEY, JSON.stringify({ kind: kind, at: Date.now(), day: new Date().toDateString(), photo: data })); } catch (e) { } }
+  function photoDrop() { try { localStorage.removeItem(PKEY); } catch (e) { } }
+  function photoHeld() {
+    try { var v = JSON.parse(localStorage.getItem(PKEY) || 'null'); if (v && v.photo && v.day === new Date().toDateString()) return v; } catch (e) { }
+    photoDrop(); return null;
+  }
+  var PBUSY = false;
+  function photoResume() {   // the page was opened or looked at again: finish what is still waiting
+    if (PBUSY || st.photo) return;
+    var h = photoHeld(); if (!h) return;
+    st.photo = h.photo; st.kind = h.kind || st.kind;
+    show('progCard', true); sendPhoto(0);
+  }
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) { photoResume(); flush(); } });
+  window.addEventListener('focus', function () { photoResume(); });
   function sendPhoto(attempt) {
     if (!st.photo) return;
+    PBUSY = true;
+    photoKeep(st.kind, st.photo);
     show('progCard', true); show('retryPhoto', false);
     ring(0, '', 'Sending the photo…');
     var n2 = 'p' + Math.random().toString(36).slice(2) + Date.now().toString(36);
     var body = JSON.stringify({ u: U, t: T, s: S, kind: st.kind, n: n2, photoOnly: 1, photo: st.photo });
     postJSON(body, function (f) { ring(5 + f * 85, '', 'Sending the photo…'); }, function (sent, text) {
       var said = sent ? parseAns(text) : null;
-      if (said && said.ok) { ring(100, 'done', 'Photo saved ✓'); setTimeout(function () { show('progCard', false); }, 2500); return; }
-      if (said && said.ok === false) { ring(100, 'bad', said.error || 'Photo did not save. Your attendance is saved.'); show('retryPhoto', true); return; }
+      PBUSY = false;
+      if (said && said.ok) { photoDrop(); st.photo = null; ring(100, 'done', 'Photo saved ✓'); setTimeout(function () { show('progCard', false); }, 2500); return; }
+      if (said && said.ok === false) { photoDrop(); st.photo = null; ring(100, 'bad', said.error || 'Photo did not save. Your attendance is saved.'); show('retryPhoto', true); return; }
       if (!sent) {
-        if (attempt < 2) { ring(0, 'bad', 'Signal dropped – trying again…'); setTimeout(function () { sendPhoto(attempt + 1); }, 1500); return; }
-        ring(100, 'bad', 'Photo did not go. Your attendance is saved.');
+        if (attempt < 3) { ring(0, 'bad', 'Signal dropped – trying again…'); setTimeout(function () { sendPhoto(attempt + 1); }, 1500); return; }
+        ring(100, 'bad', 'Photo still waiting. Your attendance is saved – open this page again when you have signal and it goes by itself.');
         show('retryPhoto', true);
         return;
       }
       ring(95, '', 'Saving the photo…');
       waitFor(n2, 0, function (r) {
-        if (r && r.ok) { ring(100, 'done', 'Photo saved ✓'); setTimeout(function () { show('progCard', false); }, 2500); }
-        else if (attempt < 2) { sendPhoto(attempt + 1); }
-        else { ring(100, 'bad', (r && r.error) || 'Photo did not save. Your attendance is saved.'); show('retryPhoto', true); }
+        if (r && r.ok) { photoDrop(); st.photo = null; ring(100, 'done', 'Photo saved ✓'); setTimeout(function () { show('progCard', false); }, 2500); }
+        else if (attempt < 3) { sendPhoto(attempt + 1); }
+        else { ring(100, 'bad', (r && r.error) || 'Photo still waiting. Open this page again when you have signal.'); show('retryPhoto', true); }
       });
     });
   }
-  $('retryPhoto').onclick = function () { sendPhoto(0); };
+  $('retryPhoto').onclick = function () { PBUSY = false; sendPhoto(0); };
+  setTimeout(photoResume, 1500);
   function onMarked(r, it) {
     if ((it && it.mode === 'visit') || r.kind === 'Visit') {
       ring(100, 'done', r.dup ? 'Already sent ✓' : 'Photo sent ✓');
