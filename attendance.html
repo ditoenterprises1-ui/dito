@@ -96,8 +96,8 @@
   var q = new URLSearchParams(location.search), U = q.get('u') || '', T = q.get('t') || '', S = q.get('s') || '';
   var W = q.get('w') || '';          // the short way home: a private Slack channel, used only when the script cannot be reached
   var PC = q.get('p') || '';         // the code of the day that goes in the coded line, so the token is never shown there
-  var PAGEV = '2026-10-29e';
-  var SRVV = '2026-10-29e';          // the server code this page needs (Code.gs: BOT_VERSION)         // which page this phone is running - sent with every mark
+  var PAGEV = '2026-10-29f';
+  var SRVV = '2026-10-29f';          // the server code this page needs (Code.gs: BOT_VERSION)         // which page this phone is running - sent with every mark
   var HOOK_AFTER = 60000;            // how long the normal way is given before the short way is used
   // k=visit&c=<check id>: the same page, used at a customer's gate for one photo of the name board.
   var VISIT = (q.get('k') || '') === 'visit', CHECK = (q.get('c') || '').replace(/[^A-Za-z0-9]/g, '');
@@ -117,15 +117,19 @@
   // it always finishes: either the server answers, or the timeout does.
   /* "who am I": tried as a POST first, because a plain GET is the one thing some phones cannot get through.
      The old GET stays as the second try, for an older deployment that does not answer a POST. */
+  /* Some phones cannot POST to the script at all: the request simply never lands, while a plain GET always
+     does. The first question of the day settles which road this phone has, and everything else follows it. */
+  var POSTOK = null;
   function who(cb) {
     var done = false, fin = function (r) { if (done) return; done = true; cb(r); };
     try {
       postJSON(JSON.stringify({ u: U, t: T, s: S, v: PAGEV, who: 1 }), null, function (sent, text) {
         var r = sent ? parseAns(text) : null;
-        if (r && r.ok) { netSeen(true); fin(r); return; }
-        jsonp({ att: 'who', u: U, t: T }, fin);
+        if (r && r.ok) { POSTOK = true; netSeen(true); fin(r); return; }
+        POSTOK = false;
+        jsonp({ att: 'who', u: U, t: T, v: PAGEV }, fin);
       });
-    } catch (e) { jsonp({ att: 'who', u: U, t: T }, fin); }
+    } catch (e) { POSTOK = false; jsonp({ att: 'who', u: U, t: T, v: PAGEV }, fin); }
   }
   function jsonp(params, cb, ms) {
     var name = 'cb' + Math.random().toString(36).slice(2), s = document.createElement('script'), done = false;
@@ -267,12 +271,16 @@
   function postMark(it, landed) {
     var body = JSON.stringify({ u: U, t: T, s: S, v: PAGEV, kind: it.kind, lat: it.lat, lng: it.lng,
       acc: it.acc, ct: it.ct, wp: it.wp, n: it.n });
+    var oldRoad = function () {   // the way that has always worked on a stubborn phone
+      jsonp({ att: 'mark', u: U, t: T, kind: it.kind, lat: it.lat, lng: it.lng, acc: it.acc, ct: it.ct, wp: it.wp, n: it.n },
+        function (r2) { landed(r2 || { ok: false, offline: true }); }, 60000);
+    };
+    if (POSTOK === false) { oldRoad(); return; }
     postJSON(body, null, function (sent, text) {
-      if (!sent) { netSeen(false); landed({ ok: false, offline: true }); return; }
-      netSeen(true);
-      var r = parseAns(text);
-      if (r) { landed(r); return; }
-      waitFor(it.n, 0, function (r2) { landed(r2 || { ok: false, offline: true }); });   // an older deployment
+      var r = sent ? parseAns(text) : null;
+      if (r) { netSeen(true); landed(r); return; }
+      POSTOK = false;
+      oldRoad();
     }, 75000);   // the server writes the row and tells the managers before it answers: it is given time
   }
   function sendVisit(it, landed) {
@@ -601,19 +609,22 @@
   /* A picture is sent in pieces of about 16 KB, one at a time, each as small as a punch. A piece that fails
      is sent again on its own; the picture is never started from the beginning. The server keeps the pieces
      and saves the whole picture when the last one lands. */
-  var PIECE = 16000;
+  var PIECE = 16000, PIECE_GET = 3200;
   function sendPieces(meta, dataUrl, onProgress, done) {
     var raw = String(dataUrl).replace(/^data:image\/\w+;base64,/, '');
-    var n = Math.max(1, Math.ceil(raw.length / PIECE));
+    var size = POSTOK === false ? PIECE_GET : PIECE;     // a GET carries less, so it takes more pieces
+    var n = Math.max(1, Math.ceil(raw.length / size));
     var id = 'c' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
     var i = 0, tries = 0, t0 = Date.now(), lastStatus = '';
     (function step() {
       if (i >= n) return;
-      var body = JSON.stringify({ u: U, t: T, s: S, v: PAGEV, chunk: 1, id: id, i: i, n: n,
-        data: raw.slice(i * PIECE, (i + 1) * PIECE), meta: i === 0 ? meta : null });
-      postJSON(body, null, function (sent, text) {
-        var r = sent ? parseAns(text) : null;
-        lastStatus = sent ? ('answered, but not with data (' + String(text || '').slice(0, 60) + ')') : 'no answer';
+      var part = raw.slice(i * size, (i + 1) * size);
+      var byGet = function (after) {
+        var pr = { att: 'chunk', u: U, t: T, id: id, i: i, n: n, data: part };
+        if (i === 0 && meta) pr.meta = JSON.stringify(meta);
+        jsonp(pr, after, 30000);
+      };
+      var landed = function (r) {
         if (!r) {
           tries++;
           if (tries > 4) { hookNote('photo stopped at piece ' + (i + 1) + ' of ' + n + ' – ' + lastStatus + ' (tried 5 times, ' + Math.round((Date.now() - t0) / 1000) + ' s)'); done(false, null); return; }
@@ -623,9 +634,17 @@
         tries = 0; i++;
         if (onProgress) onProgress(i / n);
         if (r.waiting) { step(); return; }
-        if (r.ok) hookNote('photo saved – ' + n + ' piece' + (n > 1 ? 's' : '') + ' in ' + Math.round((Date.now() - t0) / 1000) + ' s');
+        if (r.ok) hookNote('photo saved – ' + n + ' piece' + (n > 1 ? 's' : '') + ' by ' + (POSTOK === false ? 'the old road' : 'POST') + ' in ' + Math.round((Date.now() - t0) / 1000) + ' s');
         else hookNote('photo refused by the server: ' + String(r.error || '').slice(0, 80));
         done(true, r);                        // the last piece comes back with the server's answer
+      };
+      if (POSTOK === false) { byGet(function (r) { lastStatus = r ? 'the server did not take it' : 'no answer on the old road'; landed(r && r.ok !== undefined ? r : null); }); return; }
+      var body = JSON.stringify({ u: U, t: T, s: S, v: PAGEV, chunk: 1, id: id, i: i, n: n, data: part, meta: i === 0 ? meta : null });
+      postJSON(body, null, function (sent, text) {
+        var r = sent ? parseAns(text) : null;
+        lastStatus = sent ? ('answered, but not with data (' + String(text || '').slice(0, 60) + ')') : 'no answer';
+        if (!r) { POSTOK = false; byGet(function (r2) { landed(r2 && r2.ok !== undefined ? r2 : null); }); return; }
+        landed(r);
       });
     })();
   }
