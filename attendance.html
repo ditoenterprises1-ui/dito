@@ -96,8 +96,8 @@
   var q = new URLSearchParams(location.search), U = q.get('u') || '', T = q.get('t') || '', S = q.get('s') || '';
   var W = q.get('w') || '';          // the short way home: a private Slack channel, used only when the script cannot be reached
   var PC = q.get('p') || '';         // the code of the day that goes in the coded line, so the token is never shown there
-  var PAGEV = '2026-10-29f';
-  var SRVV = '2026-10-29f';          // the server code this page needs (Code.gs: BOT_VERSION)         // which page this phone is running - sent with every mark
+  var PAGEV = '2026-10-29g';
+  var SRVV = '2026-10-29f';          // the OLDEST server code this page works with; anything newer is fine          // the server code this page needs (Code.gs: BOT_VERSION)         // which page this phone is running - sent with every mark
   var HOOK_AFTER = 60000;            // how long the normal way is given before the short way is used
   // k=visit&c=<check id>: the same page, used at a customer's gate for one photo of the name board.
   var VISIT = (q.get('k') || '') === 'visit', CHECK = (q.get('c') || '').replace(/[^A-Za-z0-9]/g, '');
@@ -317,7 +317,7 @@
   var WHO = 'ditoWho_' + U;
   function showSrv(v) {
     var el = $('srv'); if (!el) return;
-    if (v === SRVV) { el.textContent = '\u2705 Server v' + v + ' – latest'; el.style.color = '#1b7f3b'; return; }
+    if (v && v >= SRVV) { el.textContent = '\u2705 Server v' + v + ' – up to date'; el.style.color = '#1b7f3b'; return; }
     el.textContent = '\u26A0\uFE0F Server code is ' + (v ? 'v' + v : 'an older copy') + ' – needs v' + SRVV +
       '. In Apps Script: Deploy → Manage deployments → pencil → Version: New version → Deploy.';
     el.style.color = '#b3261e';
